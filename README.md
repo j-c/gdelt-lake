@@ -22,9 +22,22 @@ one file per feed. Progress is kept in the lake itself, so a failed run is fixed
 
 ## Running it
 
+With Docker, using the local recipe (a named volume holds the lake; runs every 15 minutes):
+
+```
+docker compose -f deploy/local/compose.yaml up -d --build
+```
+
+Or the binary directly:
+
 ```
 gdelt-lake run [--every 15m] [--lookback 7d]
 ```
+
+`run` processes new batches, compacts finished days and exits: 0 when everything is accounted for, 1 when a file
+failed (it's retried on the next run). With `--every` it repeats until stopped; SIGTERM stops it between files. A new
+lake starts with the current batch: it doesn't fetch the past. `--lookback` is how far back a run looks for batches
+it missed, for example while it was stopped.
 
 | Variable | Meaning | Default |
 |----------|---------|---------|
@@ -32,7 +45,24 @@ gdelt-lake run [--every 15m] [--lookback 7d]
 | `LAKE_LOCAL_ROOT` | The lake's folder, for `local` | required |
 | `LAKE_DUCKDB_MEMORY` | DuckDB's memory cap | `1GB` |
 | `LAKE_GDELT_BASE_URL` | GDELT's file server | `https://data.gdeltproject.org/gdeltv2/` |
-| `LAKE_TEMP_DIR` | Scratch space for downloads | the system temp dir |
+| `LAKE_TEMP_DIR` | Scratch space for downloads and compaction (a day's GKG needs about 1 GB) | the system temp dir |
+
+## Querying it
+
+Any Parquet reader works. With DuckDB, from the lake's folder:
+
+```sql
+SELECT date, translation.source_language AS language, page_title, document_identifier
+FROM read_parquet('gkg/*/*.parquet', hive_partitioning = true, union_by_name = true)
+WHERE date >= '2026-10-31'
+  AND list_contains(list_transform(themes, lambda t: t.theme), 'ARMEDCONFLICT')
+LIMIT 10;
+```
+
+`union_by_name = true` lets one query read files written with older and newer schemas. While a day is being compacted
+there's a moment, a few seconds, when both its batch files and its day file exist; a query that must never count a row
+twice can deduplicate on `gkg_record_id` (GKG), `global_event_id` (Events) or `global_event_id` plus
+`mention_identifier` (Mentions).
 
 ## Development
 
@@ -43,6 +73,9 @@ make test    # unit and integration tests, no network needed
 make lint    # go vet, staticcheck, exhaustive, gofmt
 make build   # bin/gdelt-lake
 ```
+
+`scripts/accept.sh` checks the container image on any Docker host: it builds the image, runs it once against a fake
+GDELT server, checks the lake it wrote and cleans up, ending with `PASS` or `FAIL`.
 
 ## Data and attribution
 

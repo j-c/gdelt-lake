@@ -1,0 +1,5 @@
+# Never sent to the build: local build output, lakes and scratch space.
+bin/
+lake/
+tmp/
+*.parquet

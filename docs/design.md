@@ -135,6 +135,7 @@ There's no database. The ingester works out its progress from what's already in 
   mentions/date=…/…
   gkg/date=…/…
   _state/2026-10-31.json        batches present, missing or failed, rejected-row counts, compacted or not
+  _state/lake.json              when the lake started
 ```
 
 - `date` is the batch's UTC date. All GDELT timestamps are UTC, and so are the lake's.
@@ -194,12 +195,14 @@ string or SAS elsewhere. No custom auth code.
 1. Read both streams' file lists: `lastupdate` normally, the end of the master list (a range request) when catching up.
 2. Work out which batches in the lookback window (e.g. 7 days) aren't recorded as done in `_state`.
 3. For each batch: download, check size and MD5, unzip, convert to Parquet, write to storage, update `_state`.
-4. On failure: retry with backoff. A batch that still fails is recorded as failed and retried on the next run. After
-   the lookback window it's recorded as missing (R12).
+4. On failure: retry with backoff. A batch that still fails is recorded as failed and retried on the next run. A file
+   still unavailable (unlisted, not published, or unreadable) 6 hours after its batch time is recorded as missing
+   (R12), so a day can be compacted without waiting for it.
 5. Exit with a non-zero code if anything failed, so the scheduler shows a failed run.
 
-After downtime, the next run catches up on its own within the lookback window. Backfill later is the same mechanism
-over an older window.
+After downtime, the next run catches up on its own within the lookback window. A new lake records its first batch in
+`_state/lake.json` and never fetches anything earlier (R4); backfill later is the same mechanism over an older
+window.
 
 ### 8.2 Compaction
 

@@ -1,0 +1,42 @@
+# Used by scripts/accept.sh: the image against a fake GDELT, then a check of the lake it wrote.
+services:
+  fake-gdelt:
+    build:
+      context: ..
+      target: test
+    command: ["serve", "--addr", ":8080", "--testdata", "/src/testdata"]
+    healthcheck:
+      test: ["CMD", "/out/lake-accept", "health", "http://127.0.0.1:8080/gdeltv2/lastupdate.txt"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  ingester:
+    profiles: ["test"]
+    build:
+      context: ..
+      target: runtime
+    command: ["run"]
+    environment:
+      LAKE_GDELT_BASE_URL: http://fake-gdelt:8080/gdeltv2/
+      LAKE_DUCKDB_MEMORY: 512MB
+    volumes:
+      - lake:/lake
+      - scratch:/scratch
+    read_only: true
+    depends_on:
+      fake-gdelt:
+        condition: service_healthy
+
+  verify:
+    profiles: ["test"]
+    build:
+      context: ..
+      target: test
+    command: ["verify", "--lake", "/lake"]
+    volumes:
+      - lake:/lake:ro
+
+volumes:
+  lake:
+  scratch:

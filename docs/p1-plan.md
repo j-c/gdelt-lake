@@ -1,6 +1,6 @@
 # P1 plan: ingester with local storage
 
-Status: **draft for review**. Implements phase P1 of [design.md](design.md): the ingester (batches and compaction),
+Status: **in progress.** Steps 1-7 are built and tested; step 8 (the soak) is running. Implements phase P1 of [design.md](design.md): the ingester (batches and compaction),
 local and in-memory storage, tests, a container image and the local recipe. Azure (P2), the query service (P3) and AWS
 (P4) are out of scope.
 

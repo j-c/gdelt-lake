@@ -1,0 +1,25 @@
+# Local recipe: the ingester on any Docker host, every 15 minutes, with the lake in a named volume.
+#   docker compose -f deploy/local/compose.yaml up -d --build
+# To keep the lake in a host folder instead, replace the "lake" volume with a bind mount owned by UID 65532.
+name: gdelt-lake
+
+services:
+  ingester:
+    build:
+      context: ../..
+      target: runtime
+    image: gdelt-lake:local
+    command: ["run", "--every", "15m"]
+    environment:
+      LAKE_DUCKDB_MEMORY: 1GB
+    volumes:
+      - lake:/lake
+      - scratch:/scratch     # downloads and compaction; a day's GKG needs about 1 GB
+    read_only: true
+    mem_limit: 1536m         # DuckDB's 1 GB cap plus the Go runtime (phase 0 peaked at about 0.9 GB)
+    stop_grace_period: 60s   # SIGTERM stops between files
+    restart: unless-stopped
+
+volumes:
+  lake:
+  scratch:

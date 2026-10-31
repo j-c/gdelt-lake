@@ -35,7 +35,8 @@ func Open(memoryLimit, tempDir string) (*Engine, error) {
 	for _, stmt := range []string{
 		"SET memory_limit = " + literal(memoryLimit),
 		"SET temp_directory = " + literal(tempDir),
-		"SET preserve_insertion_order = false", // lets COPY stream instead of buffering to keep row order
+		"SET home_directory = " + literal(tempDir), // DuckDB's own files go here, so a read-only root filesystem works
+		"SET preserve_insertion_order = false",     // lets COPY stream instead of buffering to keep row order
 		"SET autoinstall_known_extensions = false",
 		"SET autoload_known_extensions = false", // Parquet is built in; never download anything at run time
 	} {

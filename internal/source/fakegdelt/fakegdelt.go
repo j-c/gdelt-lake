@@ -40,9 +40,9 @@ type file struct {
 	listedLine string
 }
 
-// Server is a fake GDELT file server. All methods are safe for concurrent use.
+// Server is a fake GDELT file server, an http.Handler. All methods are safe for concurrent use.
 type Server struct {
-	*httptest.Server
+	url      string
 	mu       sync.Mutex
 	files    map[string]*file
 	order    map[string][]string // stream key ("en"/"tr") -> file names in publication order
@@ -50,17 +50,23 @@ type Server struct {
 	requests map[string]int
 }
 
-// New starts a fake server; it stops when the test ends.
-func New(t testing.TB) *Server {
-	s := &Server{files: map[string]*file{}, order: map[string][]string{}, latest: map[string][]string{},
+// NewHandler returns a fake server that isn't listening anywhere yet, for serving with net/http.
+func NewHandler() *Server {
+	return &Server{files: map[string]*file{}, order: map[string][]string{}, latest: map[string][]string{},
 		requests: map[string]int{}}
-	s.Server = httptest.NewServer(http.HandlerFunc(s.serve))
-	t.Cleanup(s.Close)
+}
+
+// New starts a fake server for a test; it stops when the test ends.
+func New(t testing.TB) *Server {
+	s := NewHandler()
+	ts := httptest.NewServer(s)
+	t.Cleanup(ts.Close)
+	s.url = ts.URL
 	return s
 }
 
-// BaseURL is the server's equivalent of GDELT's ".../gdeltv2/".
-func (s *Server) BaseURL() string { return s.URL + "/gdeltv2/" }
+// BaseURL is the server's equivalent of GDELT's ".../gdeltv2/" (for servers started with New).
+func (s *Server) BaseURL() string { return s.url + "/gdeltv2/" }
 
 // Name returns GDELT's file name for a batch file. stream is "en" or "tr"; feed is "events", "mentions" or "gkg".
 func Name(stream, feed string, batch time.Time) string {
@@ -125,7 +131,8 @@ func (s *Server) Requests(name string) int {
 	return s.requests[name]
 }
 
-func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
+// ServeHTTP answers like GDELT's file server under /gdeltv2/.
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	name, ok := strings.CutPrefix(r.URL.Path, "/gdeltv2/")
 	if !ok {
 		http.NotFound(w, r)
