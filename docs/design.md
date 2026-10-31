@@ -57,8 +57,9 @@ There are two streams with the same three feeds:
 - **Translingual**: `masterfilelist-translation.txt` and `lastupdate-translation.txt`, with `.translation.` in the
   file names. This is GDELT's machine-translated coverage of about 65 other languages.
 
-Each list line gives the file's size, MD5 hash and URL. These are static files on GDELT's file server, not the
-rate-limited API. The ingester should still be polite: one download at a time, with backoff on errors.
+Each list line gives the file's size, MD5 hash and URL. The master lists are large (about 130 MB each and growing), so
+the ingester only reads their end, with an HTTP range request sized to the lookback window. These are static files on
+GDELT's file server (served over HTTPS), not the rate-limited API. The ingester should still be polite: one download at a time, with backoff on errors.
 
 ### 4.2 GCAM
 
@@ -69,7 +70,8 @@ of GKG. It's out of scope (R5). If a few dimensions turn out to be useful later,
 ### 4.3 Known quirks (to confirm in phase 0)
 
 - Batches are occasionally missing from the lists, or a zip is truncated or corrupt.
-- Some rows are malformed or contain bytes that aren't valid UTF-8.
+- Some rows contain bytes that aren't valid UTF-8, and GKG's last field (Extras) can contain unescaped line breaks, so
+  one record spans several lines (see 4.4).
 - Many GKG fields are delimited lists inside one column (`;`, `#`, `,` and `:` as separators).
 - An Events row is written once, when the event is first seen. Later coverage of it appears only in Mentions.
 
@@ -94,10 +96,13 @@ here is 10^6 bytes.
   1.02 GB of GKG batch Parquet). Leaving it out (R5) makes the lake roughly a quarter of the size it would otherwise be.
 - **Lake size:** the compacted day, with GKG without GCAM, is 250 MB, which extrapolates to about 91 GB a year. Batch
   files for the open day are larger until it's compacted, since small files compress less well.
-- **Rows not read:** 1 line of the English GKG (it had bytes that aren't valid UTF-8) and 594 lines of the translingual
-  GKG (about 0.3% of it), with DuckDB set to skip rows it can't parse. 99 of the translingual lines had invalid UTF-8;
-  the rest were rejected for other reasons, still to be identified. Events and Mentions lost no rows. The ingester
-  should keep these rows where it can and record the rest (R12).
+- **Rows not read:** with DuckDB reading the files as published, 1 line of the English GKG and 594 lines of the
+  translingual GKG (about 0.3%) were skipped. Two causes, both handled before DuckDB reads the file (P1, step 4):
+  - Line breaks inside GKG's last field (Extras, typically in a `mailto:` link's body). GDELT doesn't escape them, so
+    the rest of the field lands on lines of its own. Those fragments made up most of the skipped lines; the records
+    themselves were read, with Extras cut short. The ingester joins such lines back onto their record.
+  - Bytes that aren't valid UTF-8 (100 lines that day). The ingester replaces them with U+FFFD, so the record is kept.
+  With both fixes, every record of the sample batches is read.
 - **Compaction** took under a second per feed for Events and Mentions, and 14 s (English) and 10 s (translingual) for
   GKG. With DuckDB's memory limit set to 1 GB, the compacting process (the spike's, including its own runtime) peaked
   at 871 MB (English GKG) and 824 MB (translingual GKG) of resident memory, and 329 MB for the other feeds.
@@ -134,7 +139,11 @@ There's no database. The ingester works out its progress from what's already in 
 
 - `date` is the batch's UTC date. All GDELT timestamps are UTC, and so are the lake's.
 - Both streams go in the same tables, with a `translated` column (true for the translingual stream).
-- Columns keep GDELT's names, in snake_case. Timestamps are stored as UTC timestamps, not strings.
+- Columns keep GDELT's names, in snake_case. Timestamps are stored as UTC timestamps, not strings. Values that don't
+  parse as their column's type become NULL; the row is kept.
+- GKG's parsed fields (A14) use GDELT's V2 versions, which hold the same values as the older V1 fields plus character
+  offsets, so the V1 fields (themes, locations, persons, organisations, counts) aren't stored. The page title is taken
+  out of Extras into its own column, as published (HTML entities such as `&#x10D;` are not decoded).
 - How the GKG fields described in 4.3 are stored is D5.
 - Readers use hive partitioning, for example in DuckDB:
   `select … from read_parquet('gkg/*/*.parquet', hive_partitioning = true, union_by_name = true) where date >= '2026-10-01'`.
@@ -182,7 +191,7 @@ string or SAS elsewhere. No custom auth code.
 
 ### 8.1 Batches
 
-1. Read both streams' file lists: `lastupdate` normally, the master list when catching up.
+1. Read both streams' file lists: `lastupdate` normally, the end of the master list (a range request) when catching up.
 2. Work out which batches in the lookback window (e.g. 7 days) aren't recorded as done in `_state`.
 3. For each batch: download, check size and MD5, unzip, convert to Parquet, write to storage, update `_state`.
 4. On failure: retry with backoff. A batch that still fails is recorded as failed and retried on the next run. After
