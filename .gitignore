@@ -1,0 +1,30 @@
+# Binaries and build output
+/gdelt-lake
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+
+# Coverage
+coverage.*
+*.coverprofile
+
+# Go workspace files (local only)
+go.work
+go.work.sum
+
+# Local data: a lake written during development, and scratch space
+/lake/
+/tmp/
+
+# Environment files with real settings (the checked-in example is .env.example)
+.env
+*.env
+!.env.example
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
