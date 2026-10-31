@@ -10,7 +10,7 @@ local and in-memory storage, tests, a container image and the local recipe. Azur
 - `_state` accounts for every batch GDELT listed in that time: done, failed (and retried) or missing.
 - The compacted day matches the sum of its batches (row counts per feed and stream).
 - The README's DuckDB example query runs against the result.
-- The container image builds and passes its smoke test (`scripts/accept.sh`, see step 8).
+- The container image builds and passes its smoke test (CI's container job, or `scripts/accept.sh`).
 
 ## Layout
 
@@ -70,10 +70,10 @@ replacing the history so far.
 - DuckDB runs for real in the tests, not mocked: the SQL is the part most likely to be wrong.
 - The container is tested by `scripts/accept.sh` on a Docker host.
 
-## Questions before starting
+## Decisions
 
-1. **CI on GitHub Actions**: run lint, tests and the image build on every push and pull request, with read-only
-   permissions and no secrets?
-2. **Test data**: commit small samples of real GDELT rows in `testdata/`?
-3. **Soak and container check**: run the 48-hour soak as the plain binary on the development host, and prove the
-   container separately with `accept.sh` on a Docker host?
+1. **CI**: GitHub Actions runs lint, tests and the container check on every push and pull request, read-only with no
+   secrets (`.github/workflows/ci.yml`). The container job runs the same steps as `scripts/accept.sh`.
+2. **Test data**: small samples of real GDELT rows are committed in `testdata/` (see its README).
+3. **Soak and container check**: the 48-hour soak runs the plain binary on a development host; the container is
+   checked by CI and by `scripts/accept.sh` on any Docker host.
