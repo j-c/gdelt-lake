@@ -20,6 +20,10 @@ import (
 	"time"
 
 	"github.com/j-c/gdelt-lake/internal/config"
+	"github.com/j-c/gdelt-lake/internal/convert"
+	"github.com/j-c/gdelt-lake/internal/ingest"
+	"github.com/j-c/gdelt-lake/internal/source"
+	"github.com/j-c/gdelt-lake/internal/storage"
 )
 
 const usage = `usage: gdelt-lake run [--every DURATION] [--lookback DURATION]
@@ -62,9 +66,64 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		return 2
 	}
 	log.Info("starting", "storage", cfg.Storage, "every", f.every.String(), "lookback", f.lookback.String())
-	// The ingest run itself arrives in later steps (docs/p1-plan.md).
-	_ = ctx
-	return 0
+
+	store, err := openStorage(cfg)
+	if err != nil {
+		fmt.Fprintln(stderr, "storage:", err)
+		return 1
+	}
+	engine, err := convert.Open(cfg.DuckDBMemory, cfg.TempDir)
+	if err != nil {
+		fmt.Fprintln(stderr, "duckdb:", err)
+		return 1
+	}
+	defer engine.Close()
+	runner := &ingest.Runner{
+		Store:    store,
+		Source:   source.NewClient(cfg.GDELTBaseURL, userAgent),
+		Engine:   engine,
+		TempDir:  cfg.TempDir,
+		Lookback: f.lookback,
+		Log:      log,
+		Now:      time.Now,
+	}
+	runOnce := func() int {
+		started := time.Now()
+		sum, err := runner.Run(ctx)
+		code := ingest.ExitCode(sum, err)
+		attrs := []any{"done", sum.Done, "failed", sum.Failed, "missing", sum.Missing, "waiting", sum.Waiting,
+			"compacted", sum.Compacted, "seconds", time.Since(started).Round(time.Second).Seconds(), "exit", code}
+		if err != nil {
+			attrs = append(attrs, "error", err.Error())
+		}
+		log.Info("run finished", attrs...)
+		return code
+	}
+	if f.every == 0 {
+		return runOnce()
+	}
+	tick := time.NewTicker(f.every)
+	defer tick.Stop()
+	for {
+		runOnce() // in loop mode a failed run is logged and retried on the next tick
+		select {
+		case <-ctx.Done():
+			log.Info("stopping")
+			return 0
+		case <-tick.C:
+		}
+	}
+}
+
+// userAgent identifies the ingester to GDELT's file server.
+const userAgent = "gdelt-lake (+https://github.com/j-c/gdelt-lake)"
+
+func openStorage(cfg config.Config) (storage.Storage, error) {
+	switch cfg.Storage {
+	case config.StorageLocal:
+		return storage.NewLocal(cfg.LocalRoot)
+	}
+	return nil, fmt.Errorf("storage %q is not supported", cfg.Storage)
 }
 
 func parseRunFlags(args []string, stderr io.Writer) (runFlags, error) {

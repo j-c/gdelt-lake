@@ -5,9 +5,13 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/j-c/gdelt-lake/internal/source/fakegdelt"
 )
 
 func TestParseDuration(t *testing.T) {
@@ -45,7 +49,6 @@ func TestRealMainExitCodes(t *testing.T) {
 		"negative --every": {[]string{"run", "--every", "-5m"}, withRoot, 2, "must be positive"},
 		"extra arguments":  {[]string{"run", "now"}, withRoot, 2, "unexpected arguments"},
 		"missing config":   {[]string{"run"}, none, 2, "LAKE_LOCAL_ROOT"},
-		"valid":            {[]string{"run", "--every", "15m", "--lookback", "2d"}, withRoot, 0, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var stderr bytes.Buffer
@@ -54,5 +57,44 @@ func TestRealMainExitCodes(t *testing.T) {
 				t.Fatalf("exit %d, stderr %q; want exit %d and stderr containing %q", code, stderr.String(), tc.code, tc.stderr)
 			}
 		})
+	}
+}
+
+// One real run against a fake GDELT: the binary's wiring, end to end.
+func TestRunOnceAgainstFakeGDELT(t *testing.T) {
+	srv := fakegdelt.New(t)
+	batch := time.Now().UTC().Truncate(15 * time.Minute)
+	for _, s := range []string{"en", "tr"} {
+		srv.AddBatch(s, batch, map[string]string{
+			"events": "1\t20261030" + strings.Repeat("\t", 59) + "\n",
+		}, nil)
+	}
+	root := t.TempDir()
+	env := map[string]string{"LAKE_LOCAL_ROOT": root, "LAKE_GDELT_BASE_URL": srv.BaseURL(), "LAKE_TEMP_DIR": t.TempDir(),
+		"LAKE_DUCKDB_MEMORY": "256MB"}
+	var stderr, logs bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&logs, nil))
+	code := realMain(t.Context(), []string{"run"}, func(k string) string { return env[k] }, &stderr, log)
+	if code != 0 {
+		t.Fatalf("exit %d\nstderr: %s\nlogs: %s", code, stderr.String(), logs.String())
+	}
+	if !strings.Contains(logs.String(), `"msg":"run finished"`) || !strings.Contains(logs.String(), `"done":6`) {
+		t.Fatalf("logs: %s", logs.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "_state", "lake.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoopStopsCleanly(t *testing.T) {
+	srv := fakegdelt.New(t)
+	env := map[string]string{"LAKE_LOCAL_ROOT": t.TempDir(), "LAKE_GDELT_BASE_URL": srv.BaseURL(), "LAKE_TEMP_DIR": t.TempDir()}
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+	quiet := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	start := time.Now()
+	code := realMain(ctx, []string{"run", "--every", "100ms"}, func(k string) string { return env[k] }, io.Discard, quiet)
+	if code != 0 || time.Since(start) > 5*time.Second {
+		t.Fatalf("exit %d after %v; want 0 soon after the stop", code, time.Since(start))
 	}
 }

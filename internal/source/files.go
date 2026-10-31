@@ -59,6 +59,20 @@ func (s Stream) lists() (master, latest string) {
 
 var suffixes = map[string]Feed{"export.CSV.zip": Events, "mentions.CSV.zip": Mentions, "gkg.csv.zip": GKG}
 
+// FileName is GDELT's name for a batch file, e.g. "20261031094500.translation.gkg.csv.zip".
+func FileName(s Stream, f Feed, batch time.Time) string {
+	infix := ""
+	if s == Translingual {
+		infix = "translation."
+	}
+	for suffix, feed := range suffixes {
+		if feed == f {
+			return batch.UTC().Format("20060102150405") + "." + infix + suffix
+		}
+	}
+	panic(fmt.Sprintf("unknown feed %q", f))
+}
+
 // parseName reads stream, feed and batch time from a file name. ok is false for names that aren't batch files.
 func parseName(name string) (Stream, Feed, time.Time, bool) {
 	stamp, rest, found := strings.Cut(name, ".")

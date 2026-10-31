@@ -45,6 +45,12 @@ func NewClient(baseURL, userAgent string) *Client {
 	}
 }
 
+// WithBackoff sets the first retry delay (it doubles on each retry) and returns the client.
+func (c *Client) WithBackoff(d time.Duration) *Client {
+	c.backoff = d
+	return c
+}
+
 // Latest returns the files in a stream's latest batch.
 func (c *Client) Latest(ctx context.Context, s Stream) ([]File, error) {
 	_, latest := s.lists()
