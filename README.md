@@ -31,7 +31,7 @@ gdelt-lake run [--every 15m] [--lookback 7d]
 | `LAKE_STORAGE` | Storage backend: `local` (Azure Blob Storage comes next) | `local` |
 | `LAKE_LOCAL_ROOT` | The lake's folder, for `local` | required |
 | `LAKE_DUCKDB_MEMORY` | DuckDB's memory cap | `1GB` |
-| `LAKE_GDELT_BASE_URL` | GDELT's file server | `http://data.gdeltproject.org/gdeltv2/` |
+| `LAKE_GDELT_BASE_URL` | GDELT's file server | `https://data.gdeltproject.org/gdeltv2/` |
 | `LAKE_TEMP_DIR` | Scratch space for downloads | the system temp dir |
 
 ## Development

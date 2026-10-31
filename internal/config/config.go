@@ -17,7 +17,7 @@ const (
 )
 
 // DefaultGDELTBaseURL is where GDELT 2.0 publishes its file lists and 15-minute batches.
-const DefaultGDELTBaseURL = "http://data.gdeltproject.org/gdeltv2/"
+const DefaultGDELTBaseURL = "https://data.gdeltproject.org/gdeltv2/"
 
 // Config is everything the ingester needs besides its command-line flags.
 type Config struct {
