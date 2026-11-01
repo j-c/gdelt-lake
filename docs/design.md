@@ -198,7 +198,14 @@ string or SAS elsewhere. No custom auth code.
 4. On failure: retry with backoff. A batch that still fails is recorded as failed and retried on the next run. A file
    still unavailable (unlisted, not published, or unreadable) 6 hours after its batch time is recorded as missing
    (R12), so a day can be compacted without waiting for it.
-5. Exit with a non-zero code if anything failed, so the scheduler shows a failed run.
+5. Exit codes keep run errors apart from data problems (A18):
+   - **0**: the run did its job. Problems with individual files (not published yet, listed but not downloadable yet,
+     corrupt, gaps) are soft: retried on later runs, logged at WARN and reported by `health.json` (8.3).
+   - **1**: the run itself failed and needs attention: storage, DuckDB or other unrecoverable errors, logged at ERROR.
+   - **2**: bad configuration or arguments.
+
+   (Until A18 is built, any failed file makes the run exit 1. The soak showed why that's wrong: GDELT sometimes lists a
+   file up to about 45 minutes before it can be downloaded, and every such run "failed".)
 
 After downtime, the next run catches up on its own within the lookback window. A new lake records its first batch in
 `_state/lake.json` and never fetches anything earlier (R4); backfill later is the same mechanism over an older
@@ -219,6 +226,31 @@ ID plus URL for Mentions), so a reader that must never double-count can deduplic
 a table format such as Delta Lake or Iceberg is the fix; that's not justified today.
 
 Compaction keeps long-window queries fast: a 3-month query opens about 90 files per feed rather than about 8,600.
+
+### 8.3 Gaps and reconciliation (A20)
+
+- A file still unavailable 6 hours after its batch time is recorded as **missing**, so its day can be compacted
+  without it. The day file then simply lacks that batch's rows; nothing else is affected.
+- Missing files stay on the to-do list for the whole lookback window (7 days by default). Each run checks them
+  against GDELT's list, which is cheap, and downloads only those GDELT now lists.
+- When a missing file arrives late, it's added and its day is re-opened; the next run re-compacts the day, merging the
+  existing day file with the late batch, and checks the row totals as usual. `health.json` records the gap as
+  recovered.
+- After the lookback window a gap is final. To reconcile older gaps, run once with a longer window, e.g.
+  `gdelt-lake run --lookback 30d`: the same mechanism, no separate tool.
+
+### 8.4 Health (A19)
+
+Each run writes `_state/health.json`: when the run finished and its outcome (including any run error), the newest batch
+in the lake and how far behind GDELT that is, files being retried and for how long, and gaps per day (open, recovered,
+final). `gdelt-lake status` prints it and exits:
+
+- **0**: healthy;
+- **3**: data problems: a gap, the lake more than an hour behind, or a file failing for more than an hour;
+- **1**: the lake or its health file can't be read.
+
+So a scheduler or cloud alert can watch run failures (exit 1 from `run`) and data health (exit 3 from `status`)
+separately. Nothing is served over the network, so R3 doesn't come into it.
 
 ## 9. Decisions
 
@@ -243,6 +275,9 @@ Compaction keeps long-window queries fast: a 3-month query opens about 90 files 
 | A15 | Consumers outside Azure read blob storage directly with DuckDB over the private network; a local sync comes only if needed (D7 a). |
 | A16 | Images are published to GitHub Container Registry (D9 a); built locally in P1, public before P2. |
 | A17 | The Azure recipe uses Bicep (D8 a). |
+| A18 | Exit codes separate run errors (1) and bad configuration (2) from data problems, which are soft (exit 0, WARN, reported by health) (8.1). |
+| A19 | Health is reported by the lake itself: `_state/health.json` from every run, and `gdelt-lake status` with exit 3 for data problems (8.4). No health service. |
+| A20 | Gaps: missing after 6 hours (so the day compacts), re-checked for the lookback window, late files re-open and re-compact their day; older gaps are reconciled with a longer `--lookback` (8.3). The few seconds of duplicate visibility during compaction stay as they are (no table format). |
 
 ### 9.2 Decision records
 
@@ -363,7 +398,7 @@ storage contract tested once against every adapter (Azure via the Azurite emulat
 
 ## 11. Operations
 
-- **Health:** `_state` files show what's in the lake; failed runs exit non-zero; structured logs.
+- **Health:** `_state/health.json` and `gdelt-lake status` (8.4); `run` exits 1 only for run errors; structured logs.
 - **Retention:** keep everything in v1. A storage lifecycle rule can move older data to a cheaper tier.
 - **Cost:** mostly storage, plus egress when the lake is read from outside its cloud region.
 

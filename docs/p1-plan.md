@@ -1,6 +1,6 @@
 # P1 plan: ingester with local storage
 
-Status: **in progress.** Steps 1-7 are built and tested; step 8 (the soak) is running. Implements phase P1 of [design.md](design.md): the ingester (batches and compaction),
+Status: **in progress.** Steps 1-7 are built and tested; step 8 (the soak) is running; step 9 follows it. Implements phase P1 of [design.md](design.md): the ingester (batches and compaction),
 local and in-memory storage, tests, a container image and the local recipe. Azure (P2), the query service (P3) and AWS
 (P4) are out of scope.
 
@@ -60,6 +60,7 @@ replacing the history so far.
 | 6 | **Compaction.** When a day has ended (plus 2 h grace) and every batch is accounted for: write `day.parquet` per feed, record it, delete the batch files. DuckDB memory capped by `LAKE_DUCKDB_MEMORY`. | Tests: row counts match; a crash between write and delete leaves the day readable and is finished on the next run. Measured on a full real day under the 1 GB cap. |
 | 7 | **Container and local recipe.** Multi-stage Dockerfile (build with the C compiler, minimal runtime image with the C library, non-root user, read-only root filesystem except the lake and temp dirs); `deploy/local/compose.yaml` with `--every 15m` and a lake volume; `scripts/accept.sh` (build, run one cycle against the fake server, check the lake, tear down). | Static checks clean (hadolint, shellcheck, `docker compose config`); `accept.sh` passes on a Docker host. |
 | 8 | **Soak.** 48 hours against real GDELT on a development host. README completed with the DuckDB example. | The criteria at the top of this page. |
+| 9 | **Soft failures, health and gaps** (after the soak; design A18-A20). Exit codes 0/1/2 as in design 8.1; `_state/health.json` and `gdelt-lake status`; missing files re-checked for the lookback window, late files re-compact their day. | Tests: a listed-but-404 file leaves exit 0 and shows in health; a late file re-opens and re-compacts its day with matching rows; `status` exits 3 on a gap or a lake more than an hour behind. Then a short re-check run (a few hours) on the new binary against live GDELT. |
 
 ## Tests
 
