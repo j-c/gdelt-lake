@@ -1,6 +1,6 @@
 # P1 plan: ingester with local storage
 
-Status: **in progress.** Steps 1-7 are built and tested; step 8 (the soak) is running; step 9 follows it. Implements phase P1 of [design.md](design.md): the ingester (batches and compaction),
+Status: **in progress.** Steps 1-7 are built and tested; step 8 (the soak) ran from 31 Oct to 2 Nov and was stopped; steps 9 and 10 come next, then a fresh soak with backfill. Implements phase P1 of [design.md](design.md): the ingester (batches and compaction),
 local and in-memory storage, tests, a container image and the local recipe. Azure (P2), the query service (P3) and AWS
 (P4) are out of scope.
 
@@ -61,6 +61,7 @@ replacing the history so far.
 | 7 | **Container and local recipe.** Multi-stage Dockerfile (build with the C compiler, minimal runtime image with the C library, non-root user, read-only root filesystem except the lake and temp dirs); `deploy/local/compose.yaml` with `--every 15m` and a lake volume; `scripts/accept.sh` (build, run one cycle against the fake server, check the lake, tear down). | Static checks clean (hadolint, shellcheck, `docker compose config`); `accept.sh` passes on a Docker host. |
 | 8 | **Soak.** 48 hours against real GDELT on a development host. README completed with the DuckDB example. | The criteria at the top of this page. |
 | 9 | **Soft failures, health and gaps** (after the soak; design A18-A20). Exit codes 0/1/2 as in design 8.1; `_state/health.json` and `gdelt-lake status`; missing files re-checked for the lookback window, late files re-compact their day. | Tests: a listed-but-404 file leaves exit 0 and shows in health; a late file re-opens and re-compacts its day with matching rows; `status` exits 3 on a gap or a lake more than an hour behind. Then a short re-check run (a few hours) on the new binary against live GDELT. |
+| 10 | **Backfill** (design 8.5, A21): `LAKE_BACKFILL` and `LAKE_BACKFILL_BUDGET`; live first, then history newest-first a day at a time; binary search in the master list; backfill progress in `health.json`. | Tests: a backfill target fills days newest-first and compacts each; live batches are still taken first in every run; the budget stops a run at a file boundary and the next run continues; raising the target extends history. A sample of old real days (including early 2015) reads every record. Then a fresh run against live GDELT with a backfill target, as the P1 soak. |
 
 ## Tests
 

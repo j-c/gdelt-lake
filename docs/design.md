@@ -19,7 +19,7 @@ Parquet files in storage you control: a local folder, or a cloud object store. W
 | R1 | Storage is pluggable: a local volume for development, Azure Blob Storage when deployed. Another backend (e.g. S3) is one new adapter and no other change. | owner |
 | R2 | Written in Go (originally C#; changed by D0). The language's DuckDB client must be in DuckDB's primary support tier. | owner |
 | R3 | Every endpoint a system, user or MCP client uses is authenticated. The mechanism is not chosen yet (D6). | owner |
-| R4 | Forward-only: data is collected from when the lake starts. Each 15-minute batch should be in the lake within about 30 minutes. | owner |
+| R4 | Collects from when the lake starts, plus history back to a configurable point (backfill, 8.5). Each new 15-minute batch should be in the lake within about 30 minutes, backfill or not. | owner |
 | R5 | Feeds: Events, Mentions and GKG, in both the English and translingual streams. GKG is stored without GCAM (see 4.2). | owner |
 | R6 | Containers preferred. Other deployment options are open for the ingester. | owner |
 | R7 | Only as complex as needed. Every component, dependency and abstraction has to justify itself. Code volume is fine if it's readable. | owner |
@@ -35,7 +35,7 @@ Parquet files in storage you control: a local folder, or a cloud object store. W
 - **Article text.** GDELT doesn't publish it. The lake holds URLs, titles and what GDELT extracted from each article.
 - **Re-implementing the DOC API's full-text search.** That runs on GDELT's own index, which isn't published.
 - **Lags under 15 minutes.** GDELT itself publishes every 15 minutes.
-- **Historical backfill in v1.** The design keeps it possible, since it's the same code over an older date range.
+- **History before GDELT 2.0** (18 February 2015): GDELT 1.0 uses different formats.
 - **Transactional guarantees across files** (as Delta Lake or Iceberg provide). See 8.2 for the one place this shows up.
 - **Redistributing GDELT data.** The repo contains code only.
 
@@ -208,8 +208,7 @@ string or SAS elsewhere. No custom auth code.
    file up to about 45 minutes before it can be downloaded, and every such run "failed".)
 
 After downtime, the next run catches up on its own within the lookback window. A new lake records its first batch in
-`_state/lake.json` and never fetches anything earlier (R4); backfill later is the same mechanism over an older
-window.
+`_state/lake.json`; history before that is fetched only as configured backfill (8.5).
 
 ### 8.2 Compaction
 
@@ -252,6 +251,34 @@ final). `gdelt-lake status` prints it and exits:
 So a scheduler or cloud alert can watch run failures (exit 1 from `run`) and data health (exit 3 from `status`)
 separately. Nothing is served over the network, so R3 doesn't come into it.
 
+### 8.5 Backfill (A21)
+
+`LAKE_BACKFILL` sets how much history the lake should hold: a duration (`90d`) or a date (`2025-01-01`). Unset means
+none: the lake starts with the current batch. On startup, and on every run after, the ingester fetches whatever of
+that history is missing, until it's all there. Raising the value later extends the lake further back; lowering it
+doesn't delete anything.
+
+- **Live data first.** Each run brings the lookback window up to date before touching history, so new batches still
+  arrive within about 30 minutes.
+- **Then history, newest first, a whole day at a time.** Recent history is usually the most useful, and finishing one
+  day before starting the next means each day is compacted and usable as soon as it's done. A backfilled day goes
+  through the same batch files, state and compaction as a live one; old files GDELT never published are recorded as
+  missing straight away, since they're long past the 6-hour wait.
+- **A time budget per run** (`LAKE_BACKFILL_BUDGET`, default 10 minutes; `0` pauses backfill). When it's used up, the
+  run stops at the next file boundary and the following run carries on. With 15-minute runs that leaves headroom, so
+  runs never overlap, and on a scheduled job the cost per run stays bounded.
+- **Throttling.** Downloads stay one at a time, with a short pause between backfill files (250 ms). GDELT's file
+  server is static storage behind a CDN rather than the rate-limited API, so this is politeness rather than a known
+  limit. At phase 0's speed a history day takes roughly 12 minutes to fetch and convert, so 90 days takes about
+  1.5 days of running; that depends mostly on bandwidth.
+- **Reading old parts of the file list.** The master list is sorted by time, so the ingester finds a day's lines with a
+  few small range requests (a binary search on byte offsets) instead of downloading the whole 130 MB list.
+- **Size:** at phase 0's measurement, about 250 MB per day of history (about 91 GB a year).
+- `health.json` (8.4) reports backfill progress: target, oldest complete day, days remaining.
+
+Older GDELT files may differ from today's (the earliest months of GDELT 2.0 especially); the first backfill run checks
+a sample of old days with the same "every record read" test as phase 0 before going far back.
+
 ## 9. Decisions
 
 ### 9.1 Accepted
@@ -278,6 +305,7 @@ separately. Nothing is served over the network, so R3 doesn't come into it.
 | A18 | Exit codes separate run errors (1) and bad configuration (2) from data problems, which are soft (exit 0, WARN, reported by health) (8.1). |
 | A19 | Health is reported by the lake itself: `_state/health.json` from every run, and `gdelt-lake status` with exit 3 for data problems (8.4). No health service. |
 | A20 | Gaps: missing after 6 hours (so the day compacts), re-checked for the lookback window, late files re-open and re-compact their day; older gaps are reconciled with a longer `--lookback` (8.3). The few seconds of duplicate visibility during compaction stay as they are (no table format). |
+| A21 | Backfill is a config value (`LAKE_BACKFILL`); the ingester fetches missing history on startup and every run after, live data first, then history newest-first a day at a time, within a per-run time budget (8.5). |
 
 ### 9.2 Decision records
 
