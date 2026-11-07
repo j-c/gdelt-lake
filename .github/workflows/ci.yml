@@ -61,6 +61,30 @@ jobs:
             coverage.out
           retention-days: 30
 
+  # The Azure recipe compiles and passes the Bicep linter (deploy/azure/bicepconfig.json); warnings fail the job.
+  bicep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      BICEP_VERSION: v0.49.2
+      BICEP_SHA256: 0ab9de90c2493f206f8281bae74f9ee2d5ed3605548dab1adf41fef185e1f7c5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: install bicep
+        run: |
+          curl -sSfL -o bicep "https://github.com/Azure/bicep/releases/download/$BICEP_VERSION/bicep-linux-x64"
+          echo "$BICEP_SHA256  bicep" | sha256sum -c -
+          chmod +x bicep
+      - name: lint and build
+        working-directory: deploy/azure
+        run: |
+          out=$(../../bicep lint main.bicep 2>&1); echo "$out"
+          test -z "$out"
+          ../../bicep build main.bicep --stdout > /dev/null
+          ../../bicep build-params main.example.bicepparam --stdout > /dev/null
+
   container:
     needs: test
     runs-on: ubuntu-24.04

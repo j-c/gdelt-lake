@@ -1,0 +1,28 @@
+{
+  "analyzers": {
+    "core": {
+      "enabled": true,
+      "rules": {
+        "use-recent-api-versions": {
+          "level": "warning",
+          "maxAllowedAgeInDays": 730
+        },
+        "no-unused-params": {
+          "level": "warning"
+        },
+        "use-secure-value-for-secure-inputs": {
+          "level": "warning"
+        },
+        "what-if-short-circuiting": {
+          "level": "warning"
+        },
+        "no-hardcoded-location": {
+          "level": "warning"
+        },
+        "use-resource-symbol-reference": {
+          "level": "warning"
+        }
+      }
+    }
+  }
+}

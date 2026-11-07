@@ -32,3 +32,7 @@ go.work.sum
 # CI test results (scripts/testreport)
 test.json
 coverage.out
+
+# Filled-in Azure deployment parameters (deploy/azure/README.md)
+deploy/azure/*.bicepparam
+!deploy/azure/main.example.bicepparam

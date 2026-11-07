@@ -28,6 +28,9 @@ With Docker, using the local recipe (a named volume holds the lake; runs every 1
 docker compose -f deploy/local/compose.yaml up -d --build
 ```
 
+On Azure, [deploy/azure](deploy/azure/README.md) runs it as a scheduled Container Apps job writing to a private storage
+account (Bicep).
+
 Or the binary directly:
 
 ```
