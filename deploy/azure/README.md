@@ -56,7 +56,7 @@ Readers you list in `readerPrincipalIds` get read access to the lake.
 2. Create the resource group (in the region you want the data in) and preview the deployment. Nothing changes yet.
 
    ```
-   az group create --name gdelt-lake --location australiaeast
+   az group create --name gdelt-lake --location <region>
    az deployment group what-if --resource-group gdelt-lake --parameters my.bicepparam
    ```
 
