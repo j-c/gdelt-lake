@@ -103,7 +103,8 @@ the raw results (`test.json`, `coverage.out`) are kept for 30 days as the run's 
 report locally: `go test -json -cover ./... | go run ./scripts/testreport`.
 
 `scripts/accept.sh` checks the container image on any Docker host: it builds the image, runs it once against a fake
-GDELT server, checks the lake it wrote and cleans up, ending with `PASS` or `FAIL`.
+GDELT server, checks the lake it wrote and that the image carries its licences, and cleans up, ending with `PASS` or
+`FAIL`.
 
 ## Data and attribution
 
