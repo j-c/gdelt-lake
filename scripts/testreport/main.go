@@ -33,6 +33,7 @@ type event struct {
 }
 
 type test struct {
+	seq       int // order of the first event, so tests are listed as they ran
 	pkg, name string
 	result    string // pass, fail, skip
 	elapsed   time.Duration
@@ -99,7 +100,7 @@ func read(r io.Reader, module string) (*report, error) {
 			key := name + "\x00" + e.Test
 			t := rep.tests[key]
 			if t == nil {
-				t = &test{pkg: name, name: e.Test}
+				t = &test{seq: len(rep.tests), pkg: name, name: e.Test}
 				rep.tests[key] = t
 			}
 			switch e.Action {
@@ -115,6 +116,8 @@ func read(r io.Reader, module string) (*report, error) {
 }
 
 func seconds(s float64) time.Duration { return time.Duration(s * float64(time.Second)) }
+
+func secs(d time.Duration) string { return fmt.Sprintf("%.2fs", d.Seconds()) }
 
 // failed returns the failed tests that have no failed subtests (the parents of a failed subtest fail too).
 func (r *report) failed() []*test {
@@ -180,17 +183,20 @@ func (r *report) write(w io.Writer) (ok bool) {
 		icon = "❌"
 	}
 	fmt.Fprintf(w, "## %s Test report\n\n", icon)
-	fmt.Fprintf(w, "**%d passed, %d failed, %d skipped** in %d packages (%s of package time).\n\n",
-		pass, fail, skip, len(names), total.Round(time.Second))
+	fmt.Fprintf(w, "**%d passed, %d failed, %d skipped** in %d packages (%s of package time). %d results counting subtests; "+
+		"every test is listed below.\n\n", pass, fail, skip, len(names), total.Round(time.Second), len(r.tests))
 
-	fmt.Fprintln(w, "| Package | Result | Tests | Time | Coverage |")
+	fmt.Fprintln(w, "| Package | Result | Tests (with subtests) | Time | Coverage |")
 	fmt.Fprintln(w, "|---|---|---:|---:|---:|")
 	for _, n := range names {
 		p := r.pkgs[n]
-		count := 0
-		for _, t := range topLevel {
+		count, all := 0, 0
+		for _, t := range r.tests {
 			if t.pkg == n {
-				count++
+				all++
+				if !strings.Contains(t.name, "/") {
+					count++
+				}
 			}
 		}
 		result := map[string]string{"pass": "✅ pass", "fail": "❌ fail", "skip": "➖ no tests", "": "❔ unknown"}[p.result]
@@ -201,7 +207,7 @@ func (r *report) write(w io.Writer) (ok bool) {
 		if cov == "" {
 			cov = "–"
 		}
-		fmt.Fprintf(w, "| `%s` | %s | %d | %s | %s |\n", r.short(n), result, count, p.elapsed.Round(10*time.Millisecond),
+		fmt.Fprintf(w, "| `%s` | %s | %d (%d) | %s | %s |\n", r.short(n), result, count, all, secs(p.elapsed),
 			strings.TrimSuffix(cov, " of statements"))
 	}
 
@@ -209,7 +215,7 @@ func (r *report) write(w io.Writer) (ok bool) {
 		fmt.Fprint(w, "\n### Failures\n\n")
 		for _, t := range failed {
 			fmt.Fprintf(w, "<details open><summary><code>%s</code> %s (%s)</summary>\n\n```\n%s```\n\n</details>\n\n",
-				r.short(t.pkg), t.name, t.elapsed.Round(10*time.Millisecond), fence(t.output.String()))
+				r.short(t.pkg), t.name, secs(t.elapsed), fence(t.output.String()))
 		}
 	}
 	for _, n := range names { // packages that failed without a failed test: build errors, panics, timeouts
@@ -221,6 +227,11 @@ func (r *report) write(w io.Writer) (ok bool) {
 			r.short(n), fence(tail(p.output.String(), 60)))
 	}
 
+	fmt.Fprint(w, "\n### Tests\n\n")
+	for _, n := range names {
+		r.writeTests(w, n)
+	}
+
 	sort.Slice(topLevel, func(i, j int) bool { return topLevel[i].elapsed > topLevel[j].elapsed })
 	if len(topLevel) > 10 {
 		topLevel = topLevel[:10]
@@ -228,20 +239,82 @@ func (r *report) write(w io.Writer) (ok bool) {
 	if len(topLevel) > 0 {
 		fmt.Fprint(w, "\n<details><summary>Slowest tests</summary>\n\n| Test | Package | Time |\n|---|---|---:|\n")
 		for _, t := range topLevel {
-			fmt.Fprintf(w, "| %s | `%s` | %s |\n", t.name, r.short(t.pkg), t.elapsed.Round(10*time.Millisecond))
+			fmt.Fprintf(w, "| %s | `%s` | %s |\n", t.name, r.short(t.pkg), secs(t.elapsed))
 		}
 		fmt.Fprint(w, "\n</details>\n")
 	}
 	return ok
 }
 
+var resultIcon = map[string]string{"pass": "✅ pass", "fail": "❌ fail", "skip": "➖ skip", "": "❔ didn't finish"}
+
+// writeTests lists every test and subtest of a package, in the order they ran. A package with failures is shown open.
+func (r *report) writeTests(w io.Writer, pkgName string) {
+	var tests []*test
+	counts := map[string]int{}
+	for _, t := range r.tests {
+		if t.pkg == pkgName {
+			tests = append(tests, t)
+			counts[t.result]++
+		}
+	}
+	if len(tests) == 0 {
+		return
+	}
+	sort.Slice(tests, func(i, j int) bool { return tests[i].seq < tests[j].seq })
+	open, icon := "", "✅"
+	switch {
+	case counts["fail"] > 0 || counts[""] > 0:
+		open, icon = " open", "❌"
+	case counts["skip"] > 0:
+		icon = "➖"
+	}
+	fmt.Fprintf(w, "<details%s><summary>%s <code>%s</code>: %d passed, %d failed, %d skipped</summary>\n\n",
+		open, icon, r.short(pkgName), counts["pass"], counts["fail"], counts["skip"])
+	fmt.Fprintln(w, "| Test | Result | Time | Note |")
+	fmt.Fprintln(w, "|---|---|---:|---|")
+	for _, t := range tests {
+		name := t.name
+		if depth := strings.Count(t.name, "/"); depth > 0 { // a subtest: indent it under its parent
+			name = strings.Repeat("&nbsp;&nbsp;", depth) + "↳ " + t.name[strings.LastIndexByte(t.name, '/')+1:]
+		}
+		note := ""
+		switch t.result {
+		case "skip", "fail":
+			note = cell(r.message(t))
+		}
+		fmt.Fprintf(w, "| %s | %s | %s | %s |\n", cell(name), resultIcon[t.result], secs(t.elapsed), note)
+	}
+	fmt.Fprint(w, "\n</details>\n\n")
+}
+
+var locRE = regexp.MustCompile(`^\s+([\w.-]+_test\.go):(\d+): (.*)$`)
+
+// message is a test's first logged message with its location (for a skip, the reason it gave).
+func (r *report) message(t *test) string {
+	for _, l := range strings.Split(t.output.String(), "\n") {
+		if m := locRE.FindStringSubmatch(l); m != nil {
+			return m[1] + ":" + m[2] + ": " + m[3]
+		}
+	}
+	return ""
+}
+
+// cell makes text safe inside a Markdown table cell (test output like "<nil>" would otherwise be read as HTML).
+func cell(s string) string {
+	s = strings.NewReplacer("|", "\\|", "\n", " ", "<", "&lt;", ">", "&gt;").Replace(s)
+	if r := []rune(s); len(r) > 200 {
+		s = string(r[:200]) + "…"
+	}
+	return s
+}
+
 // annotate prints GitHub workflow commands that mark failed tests on the run page and in the diff.
 func (r *report) annotate(w io.Writer) {
-	loc := regexp.MustCompile(`^\s+([\w.-]+_test\.go):(\d+): (.*)$`)
 	for _, t := range r.failed() {
 		file, line, msg := "", "", strings.TrimSpace(tail(t.output.String(), 20))
 		for _, l := range strings.Split(t.output.String(), "\n") {
-			if m := loc.FindStringSubmatch(l); m != nil {
+			if m := locRE.FindStringSubmatch(l); m != nil {
 				file, line, msg = path.Join(r.short(t.pkg), m[1]), m[2], m[3]
 				break
 			}

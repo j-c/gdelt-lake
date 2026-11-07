@@ -19,6 +19,7 @@ const stream = `{"Action":"start","Package":"github.com/j-c/gdelt-lake/internal/
 {"Action":"fail","Package":"github.com/j-c/gdelt-lake/internal/ingest","Test":"TestRun/late","Elapsed":1.5}
 {"Action":"fail","Package":"github.com/j-c/gdelt-lake/internal/ingest","Test":"TestRun","Elapsed":1.6}
 {"Action":"run","Package":"github.com/j-c/gdelt-lake/internal/ingest","Test":"TestSkipped"}
+{"Action":"output","Package":"github.com/j-c/gdelt-lake/internal/ingest","Test":"TestSkipped","Output":"    ingest_test.go:7: needs <real data> | later\n"}
 {"Action":"skip","Package":"github.com/j-c/gdelt-lake/internal/ingest","Test":"TestSkipped","Elapsed":0}
 {"Action":"fail","Package":"github.com/j-c/gdelt-lake/internal/ingest","Elapsed":2.1}
 {"ImportPath":"github.com/j-c/gdelt-lake/internal/source [github.com/j-c/gdelt-lake/internal/source.test]","Action":"build-output","Output":"internal/source/client.go:9:2: undefined: x\n"}
@@ -42,12 +43,20 @@ func TestReport(t *testing.T) {
 	for _, want := range []string{
 		"## ❌ Test report",
 		"**1 passed, 1 failed, 1 skipped** in 3 packages",
-		"| `internal/state` | ✅ pass | 1 | 20ms | 81.5% |",
-		"| `internal/ingest` | ❌ fail | 2 |",
-		"<code>internal/ingest</code> TestRun/late (1.5s)",
+		"4 results counting subtests",
+		"| `internal/state` | ✅ pass | 1 (1) | 0.02s | 81.5% |",
+		"| `internal/ingest` | ❌ fail | 2 (3) |",
+		"<code>internal/ingest</code> TestRun/late (1.50s)",
 		"want '''2'''", // output can't close the code block
 		"<code>internal/source</code> failed outside a test",
 		"undefined: x",
+		// every test is listed, subtests indented, with the message of a failure
+		"<details open><summary>❌ <code>internal/ingest</code>: 0 passed, 2 failed, 1 skipped</summary>",
+		"| TestRun | ❌ fail | 1.60s |",
+		"| &nbsp;&nbsp;↳ late | ❌ fail | 1.50s | ingest_test.go:42: summary {Done:1}, want ```2``` |",
+		"| TestSkipped | ➖ skip | 0.00s | ingest_test.go:7: needs &lt;real data&gt; \\| later |",
+		"<details><summary>✅ <code>internal/state</code>: 1 passed, 0 failed, 0 skipped</summary>",
+		"| TestKey | ✅ pass | 0.01s |  |",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("report lacks %q\n%s", want, out)

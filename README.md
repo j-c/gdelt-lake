@@ -90,8 +90,9 @@ make lint    # go vet, staticcheck, exhaustive, gofmt
 make build   # bin/gdelt-lake
 ```
 
-CI runs the same lint and tests on every push and pull request. Its test report (results per package, coverage,
-failures with their output, the slowest tests) is on each run's summary page, and failed tests are marked in the diff;
+CI runs the same lint and tests on every push and pull request. Its test report is on each run's summary page: results and coverage per package, then
+every test and subtest with its result and time (with the message of each failure or skip), failures with their full
+output, and the slowest tests. Failed tests are also marked in the diff;
 the raw results (`test.json`, `coverage.out`) are kept for 30 days as the run's `test-results` artifact. To see the
 report locally: `go test -json -cover ./... | go run ./scripts/testreport`.
 
