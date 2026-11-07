@@ -16,6 +16,8 @@ type StorageKind string
 const (
 	// StorageLocal keeps the lake in a folder on a local or mounted volume.
 	StorageLocal StorageKind = "local"
+	// StorageAzure keeps the lake in an Azure Blob Storage container.
+	StorageAzure StorageKind = "azure"
 )
 
 // DefaultGDELTBaseURL is where GDELT 2.0 publishes its file lists and 15-minute batches.
@@ -28,6 +30,13 @@ type Config struct {
 	DuckDBMemory string      // LAKE_DUCKDB_MEMORY: DuckDB's memory cap, e.g. "1GB" (default "1GB")
 	GDELTBaseURL string      // LAKE_GDELT_BASE_URL: GDELT's file server (tests point this at a fake one)
 	TempDir      string      // LAKE_TEMP_DIR: scratch space for downloads and Parquet before upload
+
+	// Azure Blob Storage, for LAKE_STORAGE=azure: LAKE_AZURE_ACCOUNT_URL (credentials from the standard Azure chain:
+	// managed identity, or `az login`) or LAKE_AZURE_CONNECTION_STRING (a SAS, or Azurite); LAKE_AZURE_CONTAINER
+	// (default "gdelt").
+	AzureAccountURL       string
+	AzureConnectionString string
+	AzureContainer        string
 
 	// LAKE_BACKFILL: how much history to hold (design 8.5), either a duration ("90d") or a date ("2025-01-01").
 	// At most one of these is set; neither means no backfill.
@@ -65,6 +74,10 @@ func Load(getenv func(string) string) (Config, error) {
 		DuckDBMemory: or(getenv("LAKE_DUCKDB_MEMORY"), "1GB"),
 		GDELTBaseURL: or(getenv("LAKE_GDELT_BASE_URL"), DefaultGDELTBaseURL),
 		TempDir:      or(getenv("LAKE_TEMP_DIR"), os.TempDir()),
+
+		AzureAccountURL:       getenv("LAKE_AZURE_ACCOUNT_URL"),
+		AzureConnectionString: getenv("LAKE_AZURE_CONNECTION_STRING"),
+		AzureContainer:        or(getenv("LAKE_AZURE_CONTAINER"), "gdelt"),
 	}
 	if !strings.HasSuffix(c.GDELTBaseURL, "/") {
 		c.GDELTBaseURL += "/"
@@ -91,8 +104,14 @@ func Load(getenv func(string) string) (Config, error) {
 		if c.LocalRoot == "" {
 			return Config{}, fmt.Errorf("LAKE_LOCAL_ROOT is required when LAKE_STORAGE is %q", StorageLocal)
 		}
+	case StorageAzure:
+		if (c.AzureAccountURL == "") == (c.AzureConnectionString == "") {
+			return Config{}, fmt.Errorf("LAKE_STORAGE %q needs one of LAKE_AZURE_ACCOUNT_URL or LAKE_AZURE_CONNECTION_STRING",
+				StorageAzure)
+		}
 	default:
-		return Config{}, fmt.Errorf("LAKE_STORAGE %q is not supported (supported: %q)", c.Storage, StorageLocal)
+		return Config{}, fmt.Errorf("LAKE_STORAGE %q is not supported (supported: %q, %q)", c.Storage, StorageLocal,
+			StorageAzure)
 	}
 	return c, nil
 }

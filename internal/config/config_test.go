@@ -16,7 +16,7 @@ func TestLoadDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Config{Storage: StorageLocal, LocalRoot: "/lake", DuckDBMemory: "1GB",
-		GDELTBaseURL: DefaultGDELTBaseURL, TempDir: "/scratch", BackfillBudget: 10 * time.Minute}
+		GDELTBaseURL: DefaultGDELTBaseURL, TempDir: "/scratch", AzureContainer: "gdelt", BackfillBudget: 10 * time.Minute}
 	if c != want {
 		t.Fatalf("got %+v, want %+v", c, want)
 	}
@@ -37,10 +37,12 @@ func TestLoadErrors(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		"local without root": {map[string]string{}, "LAKE_LOCAL_ROOT is required"},
-		"unknown backend":    {map[string]string{"LAKE_STORAGE": "floppy"}, `"floppy" is not supported`},
-		"bad backfill":       {map[string]string{"LAKE_LOCAL_ROOT": "/l", "LAKE_BACKFILL": "lots"}, "LAKE_BACKFILL"},
-		"bad budget":         {map[string]string{"LAKE_LOCAL_ROOT": "/l", "LAKE_BACKFILL_BUDGET": "-1m"}, "LAKE_BACKFILL_BUDGET"},
+		"local without root":       {map[string]string{}, "LAKE_LOCAL_ROOT is required"},
+		"unknown backend":          {map[string]string{"LAKE_STORAGE": "floppy"}, `"floppy" is not supported`},
+		"azure without an account": {map[string]string{"LAKE_STORAGE": "azure"}, "LAKE_AZURE_ACCOUNT_URL"},
+		"azure with both":          {map[string]string{"LAKE_STORAGE": "azure", "LAKE_AZURE_ACCOUNT_URL": "u", "LAKE_AZURE_CONNECTION_STRING": "c"}, "one of"},
+		"bad backfill":             {map[string]string{"LAKE_LOCAL_ROOT": "/l", "LAKE_BACKFILL": "lots"}, "LAKE_BACKFILL"},
+		"bad budget":               {map[string]string{"LAKE_LOCAL_ROOT": "/l", "LAKE_BACKFILL_BUDGET": "-1m"}, "LAKE_BACKFILL_BUDGET"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := Load(env(tc.env))
@@ -84,5 +86,12 @@ func TestParseDuration(t *testing.T) {
 		if _, err := ParseDuration(in); err == nil {
 			t.Errorf("ParseDuration(%q) succeeded, want an error", in)
 		}
+	}
+}
+
+func TestLoadAzure(t *testing.T) {
+	c, err := Load(env(map[string]string{"LAKE_STORAGE": "azure", "LAKE_AZURE_ACCOUNT_URL": "https://acct.blob.core.windows.net/"}))
+	if err != nil || c.Storage != StorageAzure || c.AzureContainer != "gdelt" || c.LocalRoot != "" {
+		t.Fatalf("%+v %v", c, err)
 	}
 }

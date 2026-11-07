@@ -73,7 +73,7 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 	}
 	log.Info("starting", "storage", cfg.Storage, "every", f.every.String(), "lookback", f.lookback.String())
 
-	store, err := openStorage(cfg)
+	store, err := openStorage(ctx, cfg)
 	if err != nil {
 		fmt.Fprintln(stderr, "storage:", err)
 		return 1
@@ -145,7 +145,7 @@ func status(ctx context.Context, args []string, getenv func(string) string, stdo
 		fmt.Fprintln(stderr, "configuration:", err)
 		return 2
 	}
-	store, err := openStorage(cfg)
+	store, err := openStorage(ctx, cfg)
 	if err != nil {
 		fmt.Fprintln(stderr, "storage:", err)
 		return ingest.StatusSystem
@@ -178,10 +178,13 @@ func status(ctx context.Context, args []string, getenv func(string) string, stdo
 	return code
 }
 
-func openStorage(cfg config.Config) (storage.Storage, error) {
+func openStorage(ctx context.Context, cfg config.Config) (storage.Storage, error) {
 	switch cfg.Storage {
 	case config.StorageLocal:
 		return storage.NewLocal(cfg.LocalRoot)
+	case config.StorageAzure:
+		return storage.NewAzure(ctx, storage.AzureConfig{AccountURL: cfg.AzureAccountURL,
+			ConnectionString: cfg.AzureConnectionString, Container: cfg.AzureContainer})
 	}
 	return nil, fmt.Errorf("storage %q is not supported", cfg.Storage)
 }

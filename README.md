@@ -55,8 +55,11 @@ failed or the health file can't be read.
 
 | Variable | Meaning | Default |
 |----------|---------|---------|
-| `LAKE_STORAGE` | Storage backend: `local` (Azure Blob Storage comes next) | `local` |
-| `LAKE_LOCAL_ROOT` | The lake's folder, for `local` | required |
+| `LAKE_STORAGE` | Storage backend: `local` or `azure` (Azure Blob Storage) | `local` |
+| `LAKE_LOCAL_ROOT` | The lake's folder, for `local` | required for `local` |
+| `LAKE_AZURE_ACCOUNT_URL` | For `azure`: the account's blob endpoint, e.g. `https://<account>.blob.core.windows.net/`. Credentials come from the standard Azure chain: a managed identity in Azure (set `AZURE_CLIENT_ID` for a user-assigned one), or `az login` on a workstation. The identity needs *Storage Blob Data Contributor* on the container. | one of these two for `azure` |
+| `LAKE_AZURE_CONNECTION_STRING` | For `azure`, instead of the account URL: a connection string (a SAS, or the Azurite emulator) | |
+| `LAKE_AZURE_CONTAINER` | For `azure`: the container; created if missing and the identity may create it | `gdelt` |
 | `LAKE_DUCKDB_MEMORY` | DuckDB's memory cap | `1GB` |
 | `LAKE_GDELT_BASE_URL` | GDELT's file server | `https://data.gdeltproject.org/gdeltv2/` |
 | `LAKE_TEMP_DIR` | Scratch space for downloads and compaction (a day's GKG needs about 1 GB) | the system temp dir |

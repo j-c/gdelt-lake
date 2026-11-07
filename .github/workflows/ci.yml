@@ -1,6 +1,7 @@
 name: ci
 
 # Lint, tests and the container check on every push and pull request. Read-only: no secrets, no write permissions.
+# Images are published by publish.yml.
 # The container job runs the same steps as scripts/accept.sh (keep the two in step).
 
 on:
@@ -33,6 +34,17 @@ jobs:
         run: go tool staticcheck ./...
       - name: exhaustive
         run: go tool exhaustive ./...
+      # The Azure storage adapter's contract tests run against the Azurite emulator, with a throwaway account key
+      # made up for this run.
+      - name: azurite
+        run: |
+          key=$(openssl rand -base64 64 | tr -d '\n')
+          echo "::add-mask::$key"
+          docker run -d --name azurite -p 127.0.0.1:10000:10000 -e "AZURITE_ACCOUNTS=lake:$key" \
+            mcr.microsoft.com/azure-storage/azurite:3.37.0@sha256:830430c1da1a2d537e08f3e6764dd1f5ae00cf0346bcaf625b968ec3f0971fd5 \
+            azurite-blob --blobHost 0.0.0.0 --skipApiVersionCheck
+          for i in $(seq 30); do curl -s -o /dev/null http://127.0.0.1:10000/ && break; sleep 1; done
+          echo "GDELT_LAKE_AZURITE=DefaultEndpointsProtocol=http;AccountName=lake;AccountKey=$key;BlobEndpoint=http://127.0.0.1:10000/lake;" >> "$GITHUB_ENV"
       - name: tests
         run: go test -race -count=1 -json -coverprofile=coverage.out ./... > test.json
       # The report goes to the run's summary page; failed tests are also marked on the run page and in the diff.

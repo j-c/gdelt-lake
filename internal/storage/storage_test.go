@@ -1,10 +1,13 @@
 package storage_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/j-c/gdelt-lake/internal/storage"
 	"github.com/j-c/gdelt-lake/internal/storage/storagetest"
@@ -13,6 +16,30 @@ import (
 func TestLocalContract(t *testing.T) {
 	storagetest.Run(t, func(t *testing.T) storage.Storage {
 		s, err := storage.NewLocal(filepath.Join(t.TempDir(), "lake"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	})
+}
+
+// AzuriteEnv names the variable holding a connection string for the Azurite emulator. CI always sets it (an Azurite
+// service container), so there the test can't be skipped by accident.
+const AzuriteEnv = "GDELT_LAKE_AZURITE"
+
+func TestAzureContract(t *testing.T) {
+	conn := os.Getenv(AzuriteEnv)
+	if conn == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatalf("%s isn't set; CI runs this test against Azurite", AzuriteEnv)
+		}
+		t.Skipf("set %s to an Azurite connection string", AzuriteEnv)
+	}
+	var n atomic.Int64
+	run := time.Now().UnixNano()
+	storagetest.Run(t, func(t *testing.T) storage.Storage {
+		name := fmt.Sprintf("lake-%d-%d", run, n.Add(1)) // a new, empty container per subtest
+		s, err := storage.NewAzure(t.Context(), storage.AzureConfig{ConnectionString: conn, Container: name})
 		if err != nil {
 			t.Fatal(err)
 		}
