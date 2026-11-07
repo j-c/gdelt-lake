@@ -94,7 +94,9 @@ here is 10^6 bytes.
   English one. Every batch was published; none were missing or corrupt.
 - **GCAM** is 72% of the English GKG's compressed Parquet and 76% of the translingual one's (about 0.76 GB of the day's
   1.02 GB of GKG batch Parquet). Leaving it out (R5) makes the lake roughly a quarter of the size it would otherwise be.
-- **Lake size:** the compacted day, with GKG without GCAM, is 250 MB, which extrapolates to about 91 GB a year. Batch
+- **Lake size:** the compacted day, with GKG without GCAM, is 250 MB, which extrapolates to about 91 GB a year.
+  Two weeks of the P1 soak (24 October to 6 November 2026) averaged less: about 190 MB a day (weekdays about
+  215 MB, weekends about 130 MB), so about 70 GB a year. Batch
   files for the open day are larger until it's compacted, since small files compress less well.
 - **Rows not read:** with DuckDB reading the files as published, 1 line of the English GKG and 594 lines of the
   translingual GKG (about 0.3%) were skipped. Two causes, both handled before DuckDB reads the file (P1, step 4):
@@ -318,6 +320,7 @@ attempts, so one bad file can't hold backfill up for long. A file GDELT never li
 | A20 | Gaps: missing after 6 hours (so the day compacts), re-checked for the lookback window, late files re-open and re-compact their day; older gaps are reconciled with a longer `--lookback` (8.3). The few seconds of duplicate visibility during compaction stay as they are (no table format). |
 | A21 | Backfill is a config value (`LAKE_BACKFILL`); the ingester fetches missing history on startup and every run after, live data first, then history newest-first a day at a time, within a per-run time budget (8.5). |
 | A22 | Azure recipe (P2): the jobs run in a new subnet of the deployer's existing virtual network; the lake gets its own new storage account (general-purpose v2, Standard, LRS, Hot tier, no public network access; separate so its tiering and retention rules don't mix with other uses of an existing account) with a private endpoint, whose DNS record goes in the deployer's existing `privatelink.blob.core.windows.net` zone (a parameter); logs go to a Log Analytics workspace (30-day retention, daily cap); backfill is a parameter, default six months. |
+| A23 | Retention and tiering are Azure lifecycle rules on the data folders only (`events/`, `mentions/`, `gkg/`; never `_state/`), by time since a file was written: recipe parameters for moving to Cool and to Cold (default off: everything stays Hot) and for deletion (default 730 days). Deletion must be at least the backfill window, or `status` reports history that's gone. |
 
 ### 9.2 Decision records
 
@@ -439,7 +442,7 @@ storage contract tested once against every adapter (Azure via the Azurite emulat
 ## 11. Operations
 
 - **Health:** `_state/health.json` and `gdelt-lake status` (8.4); `run` exits 1 only for run errors; structured logs.
-- **Retention:** keep everything in v1. A storage lifecycle rule can move older data to a cheaper tier.
+- **Retention:** Azure lifecycle rules (A23): delete after two years by default; optional moves to Cool and Cold.
 - **Cost:** mostly storage, plus egress when the lake is read from outside its cloud region.
 
 ## 12. Licensing and attribution

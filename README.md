@@ -42,7 +42,7 @@ With `--every` it repeats until stopped; SIGTERM stops it between files. A new l
 
 With `LAKE_BACKFILL` set, each run also fetches history once the current batches are in: newest day first, a whole
 day at a time (each compacted when done), for at most `LAKE_BACKFILL_BUDGET` per run. A day of history takes about
-10 minutes to fetch and about 250 MB to store, so with the defaults and a 15-minute schedule the lake gains roughly a
+10 minutes to fetch and about 190 MB to store (weekdays more, weekends less), so with the defaults and a 15-minute schedule the lake gains roughly a
 day of history per run. Raising `LAKE_BACKFILL` later extends the lake further back; lowering it deletes nothing.
 
 ```
