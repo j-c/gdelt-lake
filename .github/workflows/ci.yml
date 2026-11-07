@@ -89,9 +89,8 @@ jobs:
           ../../bicep build main.bicep --stdout > /dev/null
           ../../bicep build-params main.example.bicepparam --stdout > /dev/null
 
-  # Secrets and the maintainer's private terms anywhere in the history. The terms come from an Actions secret (not
-  # available to pull requests from forks, which get the built-in rules only); findings are reported without the
-  # matched text.
+  # Secrets (keys, tokens, passwords) anywhere in the history, with Gitleaks' built-in rules (.gitleaks.toml).
+  # Findings are reported without the matched text.
   gitleaks:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -109,18 +108,10 @@ jobs:
             "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           echo "$GITLEAKS_SHA256  gitleaks.tar.gz" | sha256sum -c -
           tar -xzf gitleaks.tar.gz -C "$RUNNER_TEMP" gitleaks && rm gitleaks.tar.gz
-      - name: config
-        env:
-          GITLEAKS_PRIVATE_TERMS: ${{ secrets.GITLEAKS_PRIVATE_TERMS }}
-        run: |
-          if [ -z "$GITLEAKS_PRIVATE_TERMS" ]; then
-            echo "::notice::GITLEAKS_PRIVATE_TERMS isn't available (not set, or a pull request from a fork): built-in rules only"
-          fi
-          scripts/gitleaks-config.sh "$RUNNER_TEMP/gitleaks.toml"
       - name: scan the full history
         run: |
           status=0
-          "$RUNNER_TEMP/gitleaks" git --config "$RUNNER_TEMP/gitleaks.toml" --redact --no-banner --log-opts=--all \
+          "$RUNNER_TEMP/gitleaks" git --config .gitleaks.toml --redact --no-banner --log-opts=--all \
             --exit-code 3 --report-format json --report-path "$RUNNER_TEMP/leaks.json" || status=$?
           [ "$status" = 0 ] || [ "$status" = 3 ] || exit "$status"
           {
@@ -135,7 +126,7 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "$status" = 3 ]; then
-            jq -r '.[] | "::error file=\(.File),line=\(.StartLine),title=\(.RuleID)::possible secret or private term (commit \(.Commit[0:7]))"' \
+            jq -r '.[] | "::error file=\(.File),line=\(.StartLine),title=\(.RuleID)::possible secret (commit \(.Commit[0:7]))"' \
               "$RUNNER_TEMP/leaks.json"
             exit 1
           fi
