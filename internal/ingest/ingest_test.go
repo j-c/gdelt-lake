@@ -389,6 +389,15 @@ func TestEvaluate(t *testing.T) {
 	if code, why := Evaluate(behind, now); code != StatusData || !strings.Contains(why[0], "tr is 3h0m0s behind") {
 		t.Fatalf("%d %v", code, why)
 	}
+	newLake := Health{LastRun: RunReport{Outcome: "ok"}, Started: now.Add(-10 * time.Minute),
+		Newest: map[string]*Newest{"en": fresh["en"]}}
+	if code, why := Evaluate(newLake, now); code != StatusHealthy {
+		t.Fatalf("a 10-minute-old lake without translingual batches yet: %d %v", code, why)
+	}
+	newLake.Started = now.Add(-2 * time.Hour)
+	if code, _ := Evaluate(newLake, now); code != StatusData {
+		t.Fatalf("no translingual batches after 2 hours: %d", code)
+	}
 	failed := Health{LastRun: RunReport{Outcome: "error", Error: "duckdb: out of memory"}, Newest: fresh}
 	if code, _ := Evaluate(failed, now); code != StatusSystem {
 		t.Fatalf("%d", code)

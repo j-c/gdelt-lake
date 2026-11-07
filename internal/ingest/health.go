@@ -27,6 +27,7 @@ const (
 // Health is _state/health.json. It covers the lookback window; older history is in the per-day state files.
 type Health struct {
 	Updated  time.Time          `json:"updated"`
+	Started  time.Time          `json:"lake_started"` // the lake's first batch
 	Lookback string             `json:"lookback"`
 	LastRun  RunReport          `json:"last_run"`
 	Newest   map[string]*Newest `json:"newest"` // per stream ("en", "tr")
@@ -86,6 +87,9 @@ func (r *Runner) writeHealth(ctx context.Context, started time.Time, sum Summary
 		LastRun: RunReport{Started: started, Finished: now, Outcome: "ok", Summary: sum}}
 	if runErr != nil {
 		h.LastRun.Outcome, h.LastRun.Error = "error", runErr.Error()
+	}
+	if lake, ok, err := state.LoadLake(ctx, r.Store); err == nil && ok {
+		h.Started = lake.Started
 	}
 	if days == nil { // the run failed before reading state; keep what the last health file knew
 		if prev, err := ReadHealth(ctx, r.Store); err == nil {
@@ -177,6 +181,8 @@ func Evaluate(h Health, now time.Time) (int, []string) {
 	for _, s := range source.Streams {
 		n := h.Newest[string(s)]
 		switch {
+		case n == nil && now.Sub(h.Started) <= MaxBehind:
+			// a new lake: the translingual stream usually trails the English one by 15-30 minutes
 		case n == nil:
 			data = append(data, fmt.Sprintf("no %s batches in the lake's window", s))
 		case now.Sub(n.Batch) > MaxBehind:
