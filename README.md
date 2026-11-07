@@ -40,6 +40,11 @@ published yet, corrupt, gaps) don't change the exit code: they're retried on lat
 With `--every` it repeats until stopped; SIGTERM stops it between files. A new lake starts with the current batch.
 `--lookback` is how far back a run looks for batches it missed, and for gaps GDELT may still fill.
 
+With `LAKE_BACKFILL` set, each run also fetches history once the current batches are in: newest day first, a whole
+day at a time (each compacted when done), for at most `LAKE_BACKFILL_BUDGET` per run. A day of history takes about
+10 minutes to fetch and about 250 MB to store, so with the defaults and a 15-minute schedule the lake gains roughly a
+day of history per run. Raising `LAKE_BACKFILL` later extends the lake further back; lowering it deletes nothing.
+
 ```
 gdelt-lake status
 ```
@@ -55,6 +60,8 @@ failed or the health file can't be read.
 | `LAKE_DUCKDB_MEMORY` | DuckDB's memory cap | `1GB` |
 | `LAKE_GDELT_BASE_URL` | GDELT's file server | `https://data.gdeltproject.org/gdeltv2/` |
 | `LAKE_TEMP_DIR` | Scratch space for downloads and compaction (a day's GKG needs about 1 GB) | the system temp dir |
+| `LAKE_BACKFILL` | History to fetch: a duration (`90d`) or a date (`2025-01-01`); GDELT 2.0 starts 2015-02-18 | none |
+| `LAKE_BACKFILL_BUDGET` | Most time a run spends on backfill; `0` pauses it | `10m` |
 
 ## Querying it
 

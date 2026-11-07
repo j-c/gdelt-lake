@@ -37,6 +37,12 @@ type Runner struct {
 	Lookback time.Duration
 	Log      *slog.Logger
 	Now      func() time.Time
+
+	// Backfill (design 8.5). BackfillTarget gives the oldest batch the lake should hold at a time (zero: none).
+	BackfillTarget func(now time.Time) time.Time
+	BackfillBudget time.Duration // the most a run spends on backfill; 0 pauses it
+	BackfillPause  time.Duration // between backfill downloads
+	wall           func() time.Time
 }
 
 // Summary counts what a run did.
@@ -49,6 +55,8 @@ type Summary struct {
 	Compacted int // days compacted
 	// ListErrors counts runs where GDELT's file lists couldn't be read (this run: 0 or 1).
 	ListErrors int
+	// Backfill: files added to and recorded missing in history, and history days completed, this run.
+	BackfillDone, BackfillMissing, BackfillDays int
 }
 
 // item is one GDELT file the run may need.
@@ -200,13 +208,148 @@ func (r *Runner) run(ctx context.Context) (Summary, map[string]*state.Day, error
 	}
 
 	for _, date := range order {
-		n, err := r.compact(ctx, days[date], now, lake.Started)
+		n, err := r.compact(ctx, days[date], now, lake.First())
 		if err != nil {
 			return sum, days, fmt.Errorf("compacting %s: %w", date, err)
 		}
 		sum.Compacted += n
 	}
+	if err := r.backfill(ctx, &lake, now, &sum); err != nil {
+		return sum, days, err
+	}
 	return sum, days, nil
+}
+
+// backfillAttempts is how often a listed history file may fail before it's recorded as missing.
+const backfillAttempts = 3
+
+// backfill fetches history the lake should hold but doesn't, newest day first, until the target is reached or the
+// run's budget is used up (design 8.5). It runs after the live window is up to date. Only system errors are returned.
+func (r *Runner) backfill(ctx context.Context, lake *state.Lake, now time.Time, sum *Summary) error {
+	if r.BackfillTarget == nil || r.BackfillBudget <= 0 {
+		return nil
+	}
+	target := r.BackfillTarget(now).Truncate(source.BatchInterval)
+	if target.IsZero() || !target.Before(lake.First()) {
+		return nil
+	}
+	wall := r.wall
+	if wall == nil {
+		wall = time.Now
+	}
+	deadline := wall().Add(r.BackfillBudget)
+	for ctx.Err() == nil && target.Before(lake.First()) {
+		end := lake.First()
+		from := end.Add(-time.Nanosecond).Truncate(24 * time.Hour) // the day holding the batch just before end
+		if from.Before(target) {
+			from = target
+		}
+		day, err := state.Load(ctx, r.Store, state.DateOf(from))
+		if err != nil {
+			return err
+		}
+		finished, err := r.backfillDay(ctx, day, from, end, deadline, wall, sum)
+		if err != nil || !finished {
+			if err == nil {
+				r.Log.Info("backfill paused until the next run", "day", day.Date, "target", target)
+			}
+			return err
+		}
+		lake.Oldest = from
+		if err := state.SaveLake(ctx, r.Store, *lake); err != nil {
+			return err
+		}
+		sum.BackfillDays++
+		day.CompactedAt, day.Compacted = nil, nil // the day gained batches; compact it again (a no-op merge if not)
+		if _, err := r.compact(ctx, day, now, lake.First()); err != nil {
+			return fmt.Errorf("compacting %s: %w", day.Date, err)
+		}
+		r.Log.Info("backfilled a day", "date", day.Date, "oldest", lake.First(), "target", target)
+	}
+	return ctx.Err()
+}
+
+// backfillDay settles every file in [from, end), one day's worth of history. It reports whether it finished before
+// the deadline.
+func (r *Runner) backfillDay(ctx context.Context, day *state.Day, from, end, deadline time.Time,
+	wall func() time.Time, sum *Summary) (bool, error) {
+	listed := map[string]source.File{}
+	for _, s := range source.Streams {
+		files, err := r.Source.Between(ctx, s, from, end)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			r.Log.Warn("couldn't read GDELT's file list for backfill; trying again next run", "day", day.Date, "error", err)
+			sum.ListErrors++
+			return false, nil
+		}
+		for _, f := range files {
+			listed[f.Name] = f
+		}
+	}
+	for b := from; b.Before(end); b = b.Add(source.BatchInterval) {
+		for _, s := range source.Streams {
+			for _, f := range source.Feeds {
+				it := item{s, f, b}
+				prev := day.Files[it.key()]
+				if prev.Settled() {
+					continue
+				}
+				if ctx.Err() != nil {
+					return false, ctx.Err()
+				}
+				if !wall().Before(deadline) {
+					return false, state.Save(ctx, r.Store, day)
+				}
+				lf, ok := listed[source.FileName(s, f, b)]
+				if !ok {
+					r.settle(day, it, state.Missing, "not in GDELT's file list")
+					sum.BackfillMissing++
+					continue
+				}
+				st, err := r.add(ctx, lf)
+				var hard *runError
+				switch {
+				case err != nil && ctx.Err() != nil:
+					return false, ctx.Err()
+				case errors.As(err, &hard):
+					r.fail(day, it, prev, err)
+					_ = state.Save(ctx, r.Store, day)
+					return false, err
+				case err == nil:
+					day.Files[it.key()] = st
+					sum.BackfillDone++
+				case prev != nil && prev.Attempts+1 >= backfillAttempts:
+					r.settle(day, it, state.Missing, err.Error())
+					day.Files[it.key()].Attempts = prev.Attempts + 1
+					sum.BackfillMissing++
+				default:
+					r.fail(day, it, prev, err)
+				}
+				if err := state.Save(ctx, r.Store, day); err != nil {
+					return false, err
+				}
+				if r.BackfillPause > 0 {
+					select {
+					case <-ctx.Done():
+						return false, ctx.Err()
+					case <-time.After(r.BackfillPause):
+					}
+				}
+			}
+		}
+	}
+	for b := from; b.Before(end); b = b.Add(source.BatchInterval) { // a file that failed this time keeps the day open
+		for _, s := range source.Streams {
+			for _, f := range source.Feeds {
+				if !day.Files[state.Key(s, f, b)].Settled() {
+					return false, nil
+				}
+			}
+		}
+	}
+	return true, nil
 }
 
 // fail records a failed attempt at a file; it's retried on the next run.

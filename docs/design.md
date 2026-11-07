@@ -280,8 +280,14 @@ doesn't delete anything.
 - **Size:** at phase 0's measurement, about 250 MB per day of history (about 91 GB a year).
 - `health.json` (8.4) reports backfill progress: target, oldest complete day, days remaining.
 
-Older GDELT files may differ from today's (the earliest months of GDELT 2.0 especially); the first backfill run checks
-a sample of old days with the same "every record read" test as phase 0 before going far back.
+Older GDELT files could differ from today's, so samples were checked with phase 0's "every record read" test when
+backfill was built: six hours of 19 February 2015 (GDELT 2.0's first full day) and three hours of 15 June 2020, both
+streams, all three feeds. Every record was read; the same clean-up as today's files applied (a few invalid UTF-8 and
+continuation lines in translingual GKG). Fetching ran at about one file a second, so about 10 minutes per history
+day.
+
+A history file GDELT lists but can't serve is retried on the next runs and recorded as missing after three failed
+attempts, so one bad file can't hold backfill up for long. A file GDELT never listed is missing straight away.
 
 ## 9. Decisions
 

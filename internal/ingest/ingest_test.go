@@ -403,3 +403,143 @@ func TestEvaluate(t *testing.T) {
 		t.Fatalf("%d", code)
 	}
 }
+
+// backfillEnv is a lake started at 02:00 on day+1, with history published from day 00:00 and a backfill target of
+// day 20:00: 16 batches of history on day and 8 on day+1.
+var (
+	bfStarted = day.Add(26 * time.Hour)
+	bfTarget  = day.Add(20 * time.Hour)
+	bfGap     = day.Add(21 * time.Hour) // GDELT never published this translingual batch
+)
+
+func backfillEnv(t *testing.T) *env {
+	t.Helper()
+	e := newEnv(t, bfStarted.Add(time.Minute))
+	for b := day; !b.After(bfStarted); b = b.Add(15 * time.Minute) {
+		if b.Equal(bfGap) {
+			e.publish(b, nil, "en")
+			continue
+		}
+		e.publish(b, nil)
+	}
+	e.r.BackfillTarget = func(time.Time) time.Time { return bfTarget }
+	e.r.BackfillBudget = time.Hour
+	return e
+}
+
+func (e *env) lake(t *testing.T) state.Lake {
+	t.Helper()
+	lake, _, err := state.LoadLake(t.Context(), e.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lake
+}
+
+func TestBackfillAfterLive(t *testing.T) {
+	e := backfillEnv(t)
+	sum := e.run(t)
+	// Live first (the current batch), then history.
+	if sum.Done != 6 || sum.BackfillDays != 2 {
+		t.Fatalf("summary %+v", sum)
+	}
+	if want := (16 + 8) * 6; sum.BackfillDone+sum.BackfillMissing != want || sum.BackfillMissing != 3 {
+		t.Fatalf("backfill %d done, %d missing; want %d in all, 3 missing", sum.BackfillDone, sum.BackfillMissing, want)
+	}
+	if lake := e.lake(t); !lake.Started.Equal(bfStarted) || !lake.Oldest.Equal(bfTarget) {
+		t.Fatalf("lake %+v", lake)
+	}
+	// A finished history day is compacted straight away; day+1 waits for its end like any day.
+	d, _ := state.Load(t.Context(), e.store, state.DateOf(day))
+	if d.CompactedAt == nil || d.Compacted[source.GKG].Rows != 16*2-1 {
+		t.Fatalf("day: %v %+v", d.CompactedAt, d.Compacted[source.GKG])
+	}
+	if d, _ := state.Load(t.Context(), e.store, state.DateOf(bfStarted)); d.CompactedAt != nil {
+		t.Fatal("day+1 compacted before it ended")
+	}
+	if h := e.health(t); h.Backfill == nil || h.Backfill.DaysRemaining != 0 || !h.Backfill.Oldest.Equal(bfTarget) {
+		t.Fatalf("health backfill %+v", h.Backfill)
+	}
+	// Nothing left: the next run doesn't touch history.
+	if sum := e.run(t); sum.BackfillDone != 0 || sum.BackfillDays != 0 {
+		t.Fatalf("second run %+v", sum)
+	}
+	// When day+1 ends, its compaction includes the backfilled early hours and the live batches.
+	for b := bfStarted.Add(15 * time.Minute); b.Before(day.Add(48 * time.Hour)); b = b.Add(15 * time.Minute) {
+		e.publish(b, nil)
+	}
+	e.clock.t = day.Add(50*time.Hour + time.Minute)
+	e.run(t)
+	d, _ = state.Load(t.Context(), e.store, state.DateOf(bfStarted))
+	if d.CompactedAt == nil || d.Compacted[source.Events].Rows != 96*2 {
+		t.Fatalf("day+1 %+v %v", d.Compacted[source.Events], d.CompactedAt)
+	}
+}
+
+func TestBackfillBudgetNewestDayFirst(t *testing.T) {
+	e := backfillEnv(t)
+	tick := time.Unix(0, 0)
+	e.r.wall = func() time.Time { tick = tick.Add(time.Second); return tick } // about a second per file
+	e.r.BackfillBudget = time.Minute
+	// Run 1: day+1's 48 files finish first (newest day), then the budget stops it partway through day.
+	if sum := e.run(t); sum.BackfillDays != 1 || sum.BackfillDone+sum.BackfillMissing >= 96 {
+		t.Fatalf("run 1 %+v", sum)
+	}
+	if lake := e.lake(t); !lake.Oldest.Equal(day.Add(24 * time.Hour)) {
+		t.Fatalf("after run 1 the lake is complete from %v, want day+1 00:00", lake.Oldest)
+	}
+	runs := 1
+	for !e.lake(t).Oldest.Equal(bfTarget) {
+		if runs++; runs > 5 {
+			t.Fatal("backfill never finished")
+		}
+		e.run(t)
+	}
+	if runs != 3 {
+		t.Fatalf("finished in %d runs, want 3 for 144 files at about 59 a run", runs)
+	}
+	d, _ := state.Load(t.Context(), e.store, state.DateOf(day))
+	if d.CompactedAt == nil || d.Compacted[source.Mentions].Rows != 16*2-1 {
+		t.Fatalf("day %+v", d.Compacted)
+	}
+}
+
+func TestBackfillPausedAndRaised(t *testing.T) {
+	e := backfillEnv(t)
+	e.r.BackfillBudget = 0
+	if sum := e.run(t); sum.BackfillDone != 0 {
+		t.Fatalf("paused backfill ran: %+v", sum)
+	}
+	if h := e.health(t); h.Backfill == nil || !h.Backfill.Paused || h.Backfill.DaysRemaining != 2 {
+		t.Fatalf("health %+v", h.Backfill)
+	}
+	// A target of day+1 00:00 first, then raised to day 20:00.
+	e.r.BackfillBudget = time.Hour
+	e.r.BackfillTarget = func(time.Time) time.Time { return day.Add(24 * time.Hour) }
+	if sum := e.run(t); sum.BackfillDays != 1 || sum.BackfillDone != 48 {
+		t.Fatalf("%+v", sum)
+	}
+	e.r.BackfillTarget = func(time.Time) time.Time { return bfTarget }
+	if sum := e.run(t); sum.BackfillDays != 1 || sum.BackfillDone != 16*6-3 {
+		t.Fatalf("%+v", sum)
+	}
+	if lake := e.lake(t); !lake.Oldest.Equal(bfTarget) || !lake.Started.Equal(bfStarted) {
+		t.Fatalf("%+v", lake)
+	}
+}
+
+func TestBackfillRetriesAFailingFileThenGivesUp(t *testing.T) {
+	e := backfillEnv(t)
+	e.r.BackfillTarget = func(time.Time) time.Time { return day.Add(24 * time.Hour) }
+	bad := day.Add(25 * time.Hour)
+	e.publish(bad, map[string]fakegdelt.Fault{"gkg": fakegdelt.Corrupt}, "en")
+	for i := 1; i <= backfillAttempts; i++ {
+		sum := e.run(t)
+		if done := e.lake(t).Oldest.Equal(day.Add(24 * time.Hour)); done != (i == backfillAttempts) {
+			t.Fatalf("attempt %d: day finished %v (%+v)", i, done, sum)
+		}
+	}
+	if f := e.file(t, source.English, source.GKG, bad); f.Status != state.Missing || f.Attempts != backfillAttempts {
+		t.Fatalf("%+v", f)
+	}
+}

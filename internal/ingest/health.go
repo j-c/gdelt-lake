@@ -32,6 +32,7 @@ type Health struct {
 	LastRun  RunReport          `json:"last_run"`
 	Newest   map[string]*Newest `json:"newest"` // per stream ("en", "tr")
 	Retrying []RetryingFile     `json:"retrying"`
+	Backfill *BackfillReport    `json:"backfill,omitempty"`
 	Gaps     []Gap              `json:"gaps"`
 }
 
@@ -48,6 +49,14 @@ type RunReport struct {
 type Newest struct {
 	Batch  time.Time `json:"batch"`
 	Behind string    `json:"behind"` // at the time of the run, e.g. "17m0s"
+}
+
+// BackfillReport is backfill's progress (design 8.5).
+type BackfillReport struct {
+	Target        time.Time `json:"target"`
+	Oldest        time.Time `json:"oldest"` // the lake is complete from here on
+	DaysRemaining int       `json:"days_remaining"`
+	Paused        bool      `json:"paused,omitempty"` // LAKE_BACKFILL_BUDGET is 0
 }
 
 // RetryingFile is a file that has failed and will be tried again.
@@ -68,7 +77,8 @@ type Gap struct {
 // Summary's JSON names, for the health file.
 func (s Summary) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]int{"done": s.Done, "failed": s.Failed, "missing": s.Missing,
-		"waiting": s.Waiting, "recovered": s.Recovered, "compacted": s.Compacted, "list_errors": s.ListErrors})
+		"waiting": s.Waiting, "recovered": s.Recovered, "compacted": s.Compacted, "list_errors": s.ListErrors,
+		"backfill_done": s.BackfillDone, "backfill_missing": s.BackfillMissing, "backfill_days": s.BackfillDays})
 }
 
 func (s *Summary) UnmarshalJSON(b []byte) error {
@@ -77,7 +87,8 @@ func (s *Summary) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	*s = Summary{Done: m["done"], Failed: m["failed"], Missing: m["missing"], Waiting: m["waiting"],
-		Recovered: m["recovered"], Compacted: m["compacted"], ListErrors: m["list_errors"]}
+		Recovered: m["recovered"], Compacted: m["compacted"], ListErrors: m["list_errors"],
+		BackfillDone: m["backfill_done"], BackfillMissing: m["backfill_missing"], BackfillDays: m["backfill_days"]}
 	return nil
 }
 
@@ -90,6 +101,16 @@ func (r *Runner) writeHealth(ctx context.Context, started time.Time, sum Summary
 	}
 	if lake, ok, err := state.LoadLake(ctx, r.Store); err == nil && ok {
 		h.Started = lake.Started
+		if r.BackfillTarget != nil {
+			if target := r.BackfillTarget(now).Truncate(source.BatchInterval); !target.IsZero() {
+				b := &BackfillReport{Target: target, Oldest: lake.First(), Paused: r.BackfillBudget <= 0}
+				if target.Before(lake.First()) {
+					last := lake.First().Add(-time.Nanosecond).Truncate(24 * time.Hour)
+					b.DaysRemaining = int(last.Sub(target.Truncate(24*time.Hour))/(24*time.Hour)) + 1
+				}
+				h.Backfill = b
+			}
+		}
 	}
 	if days == nil { // the run failed before reading state; keep what the last health file knew
 		if prev, err := ReadHealth(ctx, r.Store); err == nil {

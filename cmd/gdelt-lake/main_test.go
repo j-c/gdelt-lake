@@ -14,20 +14,6 @@ import (
 	"github.com/j-c/gdelt-lake/internal/source/fakegdelt"
 )
 
-func TestParseDuration(t *testing.T) {
-	for in, want := range map[string]time.Duration{"15m": 15 * time.Minute, "7d": 7 * 24 * time.Hour, "90s": 90 * time.Second} {
-		got, err := parseDuration(in)
-		if err != nil || got != want {
-			t.Errorf("parseDuration(%q) = %v, %v; want %v", in, got, err, want)
-		}
-	}
-	for _, in := range []string{"xd", "7 days", ""} {
-		if _, err := parseDuration(in); err == nil {
-			t.Errorf("parseDuration(%q) succeeded, want an error", in)
-		}
-	}
-}
-
 func TestRealMainExitCodes(t *testing.T) {
 	quiet := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	withRoot := func(k string) string {

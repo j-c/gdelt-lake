@@ -14,7 +14,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -93,6 +92,13 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		Lookback: f.lookback,
 		Log:      log,
 		Now:      time.Now,
+
+		BackfillTarget: cfg.BackfillTarget,
+		BackfillBudget: cfg.BackfillBudget,
+		BackfillPause:  250 * time.Millisecond,
+	}
+	if t := cfg.BackfillTarget(time.Now()); !t.IsZero() {
+		log.Info("backfill configured", "target", t, "budget_per_run", cfg.BackfillBudget.String())
 	}
 	runOnce := func() int {
 		started := time.Now()
@@ -100,6 +106,7 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 		code := ingest.ExitCode(err)
 		attrs := []any{"done", sum.Done, "failed", sum.Failed, "missing", sum.Missing, "waiting", sum.Waiting,
 			"recovered", sum.Recovered, "compacted", sum.Compacted, "list_errors", sum.ListErrors,
+			"backfill_done", sum.BackfillDone, "backfill_missing", sum.BackfillMissing, "backfill_days", sum.BackfillDays,
 			"seconds", time.Since(started).Round(time.Second).Seconds(), "exit", code}
 		if code != 0 {
 			log.Error("run failed", append(attrs, "error", err.Error())...)
@@ -157,6 +164,14 @@ func status(ctx context.Context, args []string, getenv func(string) string, stdo
 			fmt.Fprintf(stdout, "  %s: newest batch %s\n", s, n.Batch.Format(time.RFC3339))
 		}
 	}
+	if b := h.Backfill; b != nil {
+		paused := ""
+		if b.Paused {
+			paused = " (paused)"
+		}
+		fmt.Fprintf(stdout, "  backfill%s: complete from %s, target %s, %d days to go\n", paused,
+			b.Oldest.Format(time.RFC3339), b.Target.Format(time.RFC3339), b.DaysRemaining)
+	}
 	for _, r := range reasons {
 		fmt.Fprintln(stdout, "  - "+r)
 	}
@@ -185,30 +200,18 @@ func parseRunFlags(args []string, stderr io.Writer) (runFlags, error) {
 	var f runFlags
 	var err error
 	if *every != "" {
-		if f.every, err = parseDuration(*every); err != nil {
+		if f.every, err = config.ParseDuration(*every); err != nil {
 			return runFlags{}, fmt.Errorf("--every: %w", err)
 		}
 		if f.every <= 0 {
 			return runFlags{}, errors.New("--every must be positive")
 		}
 	}
-	if f.lookback, err = parseDuration(*lookback); err != nil {
+	if f.lookback, err = config.ParseDuration(*lookback); err != nil {
 		return runFlags{}, fmt.Errorf("--lookback: %w", err)
 	}
 	if f.lookback <= 0 {
 		return runFlags{}, errors.New("--lookback must be positive")
 	}
 	return f, nil
-}
-
-// parseDuration accepts Go durations plus whole days ("7d"), which Go's own parser doesn't.
-func parseDuration(s string) (time.Duration, error) {
-	if days, ok := strings.CutSuffix(s, "d"); ok {
-		n, err := strconv.Atoi(days)
-		if err != nil {
-			return 0, fmt.Errorf("invalid duration %q", s)
-		}
-		return time.Duration(n) * 24 * time.Hour, nil
-	}
-	return time.ParseDuration(s)
 }

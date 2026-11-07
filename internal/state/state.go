@@ -109,8 +109,19 @@ func (f *File) Settled() bool { return f != nil && (f.Status == Done || f.Status
 
 // Lake records facts about the lake as a whole, at _state/lake.json.
 type Lake struct {
-	// Started is the first batch the lake collects. The lake is forward-only: nothing earlier is fetched.
+	// Started is the first batch the lake collected live. Earlier batches come only from backfill.
 	Started time.Time `json:"started"`
+	// Oldest is how far back the lake is complete: every file from here on is in the lake or recorded as missing.
+	// Backfill moves it back a day at a time; zero means Started.
+	Oldest time.Time `json:"oldest,omitzero"`
+}
+
+// First is the oldest batch the lake holds without holes left to fill.
+func (l Lake) First() time.Time {
+	if !l.Oldest.IsZero() && l.Oldest.Before(l.Started) {
+		return l.Oldest
+	}
+	return l.Started
 }
 
 const lakePath = "_state/lake.json"

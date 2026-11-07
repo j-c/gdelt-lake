@@ -196,3 +196,44 @@ func TestDownloadStopsWhenCancelled(t *testing.T) {
 		t.Fatal("Download kept waiting after the context ended")
 	}
 }
+
+func TestBetween(t *testing.T) {
+	srv := fakegdelt.New(t)
+	start := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	for d := range 30 { // 30 days: a master list of several hundred KB, so the search has to narrow it down
+		day(srv, start.AddDate(0, 0, d))
+	}
+	c := testClient(srv.BaseURL())
+	from, to := start.AddDate(0, 0, 17), start.AddDate(0, 0, 18)
+	files, err := c.Between(t.Context(), Translingual, from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 96*3 {
+		t.Fatalf("%d files, want %d", len(files), 96*3)
+	}
+	for _, f := range files {
+		if f.Stream != Translingual || f.Batch.Before(from) || !f.Batch.Before(to) {
+			t.Fatalf("file outside the range: %+v", f)
+		}
+	}
+	if n := srv.Requests("masterfilelist-translation.txt"); n > 20 {
+		t.Errorf("%d requests to the master list; a binary search needs far fewer", n)
+	}
+	// The very first and last days work too, and a range with no batches is empty.
+	for _, tc := range []struct {
+		from, to time.Time
+		want     int
+	}{
+		{start, start.AddDate(0, 0, 1), 288},
+		{start.AddDate(0, 0, 29), start.AddDate(0, 0, 30), 288},
+		{start.AddDate(0, 0, 40), start.AddDate(0, 0, 41), 0},
+		{time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC), start, 0},                                         // between the fake list's 2015 padding and its real days
+		{time.Date(2015, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2016, 1, 1, 0, 0, 0, 0, time.UTC), 200}, // the padding itself, from the list's first line
+	} {
+		got, err := c.Between(t.Context(), English, tc.from, tc.to)
+		if err != nil || len(got) != tc.want {
+			t.Errorf("Between(%v, %v) = %d files, %v; want %d", tc.from, tc.to, len(got), err, tc.want)
+		}
+	}
+}
