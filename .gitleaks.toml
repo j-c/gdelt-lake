@@ -1,0 +1,5 @@
+# Secret scanning (Gitleaks) in CI: its built-in rules for keys, tokens and passwords.
+title = "gdelt-lake"
+
+[extend]
+useDefault = true
