@@ -45,7 +45,10 @@ type Summary struct {
 	Failed    int // files that failed this run (they're retried next run)
 	Missing   int // files recorded as missing this run
 	Waiting   int // files GDELT hasn't listed yet, still within GiveUpAfter
+	Recovered int // files recorded as missing earlier that arrived this run
 	Compacted int // days compacted
+	// ListErrors counts runs where GDELT's file lists couldn't be read (this run: 0 or 1).
+	ListErrors int
 }
 
 // item is one GDELT file the run may need.
@@ -66,9 +69,22 @@ func LakePath(s source.Stream, f source.Feed, batch time.Time) string {
 // DayPath is where a compacted day file lives: gkg/date=2026-10-31/day.parquet.
 func DayPath(f source.Feed, date string) string { return string(f) + "/date=" + date + "/day.parquet" }
 
-// Run brings the lake up to date. It returns an error only for problems that stop the run (storage errors, a
-// cancelled context); failed files are counted in the summary and retried next time.
+// Run brings the lake up to date and writes _state/health.json. It returns an error only for problems that stop the
+// run and need attention (storage, DuckDB, a cancelled context). Problems with individual files are soft: they're
+// counted in the summary, retried on later runs and reported in health.json (design 8.1, A18).
 func (r *Runner) Run(ctx context.Context) (Summary, error) {
+	started := r.Now().UTC()
+	sum, days, err := r.run(ctx)
+	if ctx.Err() != nil {
+		return sum, err // stopped on request; health is written by the next run
+	}
+	if herr := r.writeHealth(ctx, started, sum, days, err); herr != nil && err == nil {
+		err = fmt.Errorf("writing health: %w", herr)
+	}
+	return sum, err
+}
+
+func (r *Runner) run(ctx context.Context) (Summary, map[string]*state.Day, error) {
 	var sum Summary
 	now := r.Now().UTC()
 	last := now.Truncate(source.BatchInterval).Add(source.BatchInterval) // GDELT stamps a batch with its end time
@@ -76,12 +92,12 @@ func (r *Runner) Run(ctx context.Context) (Summary, error) {
 
 	lake, ok, err := state.LoadLake(ctx, r.Store)
 	if err != nil {
-		return sum, err
+		return sum, nil, err
 	}
-	if !ok { // a new lake starts with the current batch: forward-only (design R4)
+	if !ok { // a new lake starts with the current batch
 		lake = state.Lake{Started: now.Truncate(source.BatchInterval)}
 		if err := state.SaveLake(ctx, r.Store, lake); err != nil {
-			return sum, err
+			return sum, nil, err
 		}
 		r.Log.Info("new lake", "started", lake.Started)
 	}
@@ -95,22 +111,21 @@ func (r *Runner) Run(ctx context.Context) (Summary, error) {
 		date := state.DateOf(d)
 		day, err := state.Load(ctx, r.Store, date)
 		if err != nil {
-			return sum, err
+			return sum, nil, err
 		}
 		days[date] = day
 		order = append(order, date)
 	}
 
+	// Everything in the window not yet in the lake, including files recorded as missing: GDELT may still publish
+	// them, and a late file re-opens its day (design 8.3).
 	var pending []item
 	for b := first; !b.After(last); b = b.Add(source.BatchInterval) {
 		day := days[state.DateOf(b)]
-		if day.CompactedAt != nil {
-			continue
-		}
 		for _, s := range source.Streams {
 			for _, f := range source.Feeds {
 				it := item{s, f, b}
-				if !day.Files[it.key()].Settled() {
+				if st := day.Files[it.key()]; st == nil || st.Status != state.Done {
 					pending = append(pending, it)
 				}
 			}
@@ -119,65 +134,94 @@ func (r *Runner) Run(ctx context.Context) (Summary, error) {
 
 	listed, listErr := r.list(ctx, pending)
 	if ctx.Err() != nil {
-		return sum, ctx.Err()
+		return sum, days, ctx.Err()
 	}
 	if listErr != nil {
-		r.Log.Error("reading GDELT's file lists", "error", listErr)
-		sum.Failed++
+		r.Log.Warn("couldn't read GDELT's file lists; trying again next run", "error", listErr)
+		sum.ListErrors++
 	}
 	for _, it := range pending {
 		if ctx.Err() != nil {
-			return sum, ctx.Err()
+			return sum, days, ctx.Err()
 		}
 		if listErr != nil {
 			break
 		}
 		day := days[it.date()]
+		prev := day.Files[it.key()]
+		wasMissing := prev != nil && prev.Status == state.Missing
 		old := now.Sub(it.batch) > GiveUpAfter
 		f, ok := listed[source.FileName(it.stream, it.feed, it.batch)]
-		if !ok {
-			if !old {
-				sum.Waiting++
-				continue
-			}
+		switch {
+		case !ok && wasMissing:
+			continue // still not published; nothing changes
+		case !ok && !old:
+			sum.Waiting++
+			continue
+		case !ok:
 			r.settle(day, it, state.Missing, "not in GDELT's file list")
 			sum.Missing++
-		} else {
+		default:
 			st, err := r.add(ctx, f)
 			if err != nil && ctx.Err() != nil {
-				return sum, ctx.Err()
+				return sum, days, ctx.Err()
 			}
-			prev := day.Files[it.key()]
+			var hard *runError
 			switch {
+			case errors.As(err, &hard):
+				r.fail(day, it, prev, err)
+				_ = state.Save(ctx, r.Store, day)
+				return sum, days, err
+			case err == nil && wasMissing:
+				st.Recovered = true
+				day.Files[it.key()] = st
+				if day.CompactedAt != nil { // re-open the day; the next compaction merges the late batch in
+					day.CompactedAt, day.Compacted = nil, nil
+				}
+				r.Log.Info("missing file arrived late; its day will be re-compacted", "file", f.Name)
+				sum.Done++
+				sum.Recovered++
 			case err == nil:
 				day.Files[it.key()] = st
 				sum.Done++
+			case wasMissing:
+				continue // listed now but still not readable; stays missing until it is
 			case old:
 				r.settle(day, it, state.Missing, err.Error())
 				sum.Missing++
 			default:
-				attempts := 1
-				if prev != nil {
-					attempts = prev.Attempts + 1
-				}
-				day.Files[it.key()] = &state.File{Status: state.Failed, Attempts: attempts, Error: err.Error(), Updated: r.Now().UTC()}
+				r.fail(day, it, prev, err)
 				sum.Failed++
-				r.Log.Warn("file failed; retrying next run", "file", f.Name, "attempts", attempts, "error", err)
 			}
 		}
 		if err := state.Save(ctx, r.Store, day); err != nil {
-			return sum, err
+			return sum, days, err
 		}
 	}
 
 	for _, date := range order {
 		n, err := r.compact(ctx, days[date], now, lake.Started)
 		if err != nil {
-			return sum, fmt.Errorf("compacting %s: %w", date, err)
+			return sum, days, fmt.Errorf("compacting %s: %w", date, err)
 		}
 		sum.Compacted += n
 	}
-	return sum, nil
+	return sum, days, nil
+}
+
+// fail records a failed attempt at a file; it's retried on the next run.
+func (r *Runner) fail(day *state.Day, it item, prev *state.File, err error) {
+	now := r.Now().UTC()
+	st := &state.File{Status: state.Failed, Attempts: 1, Error: err.Error(), Updated: now, FirstFailed: &now}
+	if prev != nil && prev.Status == state.Failed {
+		st.Attempts = prev.Attempts + 1
+		if prev.FirstFailed != nil {
+			st.FirstFailed = prev.FirstFailed
+		}
+	}
+	day.Files[it.key()] = st
+	r.Log.Warn("file failed; retrying next run", "file", source.FileName(it.stream, it.feed, it.batch),
+		"attempts", st.Attempts, "error", err)
 }
 
 func (r *Runner) settle(day *state.Day, it item, st state.Status, why string) {
@@ -189,6 +233,12 @@ func (r *Runner) settle(day *state.Day, it item, st state.Status, why string) {
 	day.Files[it.key()] = &state.File{Status: st, Attempts: attempts, Error: why, Updated: r.Now().UTC()}
 	r.Log.Warn("file recorded as missing", "file", source.FileName(it.stream, it.feed, it.batch), "reason", why)
 }
+
+// runError marks an error that stops the run: the problem isn't the file but the system (DuckDB, storage, disk).
+type runError struct{ err error }
+
+func (e *runError) Error() string { return e.err.Error() }
+func (e *runError) Unwrap() error { return e.err }
 
 // list returns GDELT's listed files by name, reading only as much of the lists as the pending items need.
 func (r *Runner) list(ctx context.Context, pending []item) (map[string]source.File, error) {
@@ -224,9 +274,10 @@ func (r *Runner) list(ctx context.Context, pending []item) (map[string]source.Fi
 func (r *Runner) add(ctx context.Context, f source.File) (*state.File, error) {
 	tmp, err := os.MkdirTemp(r.TempDir, "batch-")
 	if err != nil {
-		return nil, err
+		return nil, &runError{err}
 	}
 	defer os.RemoveAll(tmp)
+	// Download and unzip problems are about the file (soft); anything after that is about this system (hard).
 	zipPath, err := r.Source.Download(ctx, f, tmp)
 	if err != nil {
 		return nil, err
@@ -239,12 +290,12 @@ func (r *Runner) add(ctx context.Context, f source.File) (*state.File, error) {
 	out := filepath.Join(tmp, "out.parquet")
 	res, err := r.Engine.Batch(ctx, f.Feed, f.Stream == source.Translingual, csv, out)
 	if err != nil {
-		return nil, err
+		return nil, &runError{err}
 	}
 	_ = os.Remove(csv)
 	size, err := r.put(ctx, out, LakePath(f.Stream, f.Feed, f.Batch))
 	if err != nil {
-		return nil, err
+		return nil, &runError{err}
 	}
 	if res.Rejected() > 0 {
 		r.Log.Warn("records DuckDB couldn't read", "file", f.Name, "rejected", res.Rejected())
@@ -296,6 +347,11 @@ func (r *Runner) compact(ctx context.Context, day *state.Day, now, started time.
 		inputs, err := r.batchFiles(ctx, f, day.Date)
 		if err != nil {
 			return 0, err
+		}
+		if ok, err := r.Store.Exists(ctx, DayPath(f, day.Date)); err != nil {
+			return 0, err
+		} else if ok { // re-compacting a re-opened day: merge the late batches into the existing day file
+			inputs = append(inputs, DayPath(f, day.Date))
 		}
 		if len(inputs) == 0 {
 			compacted[f] = &state.Compacted{}
@@ -391,16 +447,11 @@ func (r *Runner) get(ctx context.Context, lakePath, local string) error {
 	return out.Close()
 }
 
-// ExitCode maps a run's outcome to the process exit code: 0 when everything is accounted for, 1 otherwise.
-func ExitCode(sum Summary, err error) int {
-	if errors.Is(err, context.Canceled) {
-		return 0 // stopped on request; the next run carries on
+// ExitCode maps a run's outcome to the process exit code (design 8.1): 0 when the run did its job, whatever happened
+// to individual files; 1 when it failed and needs attention. A run stopped on request exits 0.
+func ExitCode(err error) int {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return 0
 	}
-	if err != nil {
-		return 1
-	}
-	if sum.Failed > 0 {
-		return 1
-	}
-	return 0
+	return 1
 }

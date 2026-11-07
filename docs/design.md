@@ -204,8 +204,9 @@ string or SAS elsewhere. No custom auth code.
    - **1**: the run itself failed and needs attention: storage, DuckDB or other unrecoverable errors, logged at ERROR.
    - **2**: bad configuration or arguments.
 
-   (Until A18 is built, any failed file makes the run exit 1. The soak showed why that's wrong: GDELT sometimes lists a
-   file up to about 45 minutes before it can be downloaded, and every such run "failed".)
+   Download and unzip problems count as file problems; DuckDB, storage and disk errors stop the run with exit 1. (The
+   first soak showed why: GDELT sometimes lists a file up to about 45 minutes before it can be downloaded, and with
+   every failed file counted as a failed run, six of 53 runs "failed" though nothing was lost.)
 
 After downtime, the next run catches up on its own within the lookback window. A new lake records its first batch in
 `_state/lake.json`; history before that is fetched only as configured backfill (8.5).
@@ -245,8 +246,11 @@ in the lake and how far behind GDELT that is, files being retried and for how lo
 final). `gdelt-lake status` prints it and exits:
 
 - **0**: healthy;
-- **3**: data problems: a gap, the lake more than an hour behind, or a file failing for more than an hour;
-- **1**: the lake or its health file can't be read.
+- **3**: data problems: a gap in the window, a stream more than an hour behind, or a file failing for more than an
+  hour;
+- **1**: needs attention: the last run failed (a system error), or the health file can't be read.
+
+`health.json` covers the lookback window; gaps older than that stay recorded in the per-day state files.
 
 So a scheduler or cloud alert can watch run failures (exit 1 from `run`) and data health (exit 3 from `status`)
 separately. Nothing is served over the network, so R3 doesn't come into it.

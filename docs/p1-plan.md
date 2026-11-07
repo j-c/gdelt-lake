@@ -1,6 +1,6 @@
 # P1 plan: ingester with local storage
 
-Status: **in progress.** Steps 1-7 are built and tested; step 8 (the soak) ran from 31 Oct to 2 Nov and was stopped; steps 9 and 10 come next, then a fresh soak with backfill. Implements phase P1 of [design.md](design.md): the ingester (batches and compaction),
+Status: **in progress.** Steps 1-7 are built and tested; step 8 (the soak) ran from 31 Oct to 2 Nov and was stopped; step 9 is built; step 10 comes next, then a fresh soak with backfill. Implements phase P1 of [design.md](design.md): the ingester (batches and compaction),
 local and in-memory storage, tests, a container image and the local recipe. Azure (P2), the query service (P3) and AWS
 (P4) are out of scope.
 

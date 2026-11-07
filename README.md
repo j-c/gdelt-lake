@@ -34,10 +34,19 @@ Or the binary directly:
 gdelt-lake run [--every 15m] [--lookback 7d]
 ```
 
-`run` processes new batches, compacts finished days and exits: 0 when everything is accounted for, 1 when a file
-failed (it's retried on the next run). With `--every` it repeats until stopped; SIGTERM stops it between files. A new
-lake starts with the current batch: it doesn't fetch the past. `--lookback` is how far back a run looks for batches
-it missed, for example while it was stopped.
+`run` processes new batches, compacts finished days and exits 0 when it did its job, 1 when it failed and needs
+attention (DuckDB, storage or disk errors) and 2 for bad configuration. Problems with individual GDELT files (not
+published yet, corrupt, gaps) don't change the exit code: they're retried on later runs and reported by `status`.
+With `--every` it repeats until stopped; SIGTERM stops it between files. A new lake starts with the current batch.
+`--lookback` is how far back a run looks for batches it missed, and for gaps GDELT may still fill.
+
+```
+gdelt-lake status
+```
+
+prints the lake's health (from `_state/health.json`, written by every run) and exits 0 when healthy, 3 for data
+problems (gaps, a stream more than an hour behind, a file failing for more than an hour) and 1 when the last run
+failed or the health file can't be read.
 
 | Variable | Meaning | Default |
 |----------|---------|---------|

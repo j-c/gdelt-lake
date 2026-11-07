@@ -33,6 +33,10 @@ type File struct {
 	Attempts int       `json:"attempts,omitempty"`
 	Error    string    `json:"error,omitempty"`
 	Updated  time.Time `json:"updated"`
+	// FirstFailed is when a failing file first failed, for "failing for how long".
+	FirstFailed *time.Time `json:"first_failed,omitempty"`
+	// Recovered marks a file that was recorded as missing and arrived later.
+	Recovered bool `json:"recovered,omitempty"`
 	// Set when done.
 	Records           int64 `json:"records,omitempty"`
 	Rows              int64 `json:"rows,omitempty"`

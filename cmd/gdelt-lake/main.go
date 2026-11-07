@@ -27,9 +27,13 @@ import (
 )
 
 const usage = `usage: gdelt-lake run [--every DURATION] [--lookback DURATION]
+       gdelt-lake status
 
-  run   process new GDELT batches, compact finished days, and exit
-        (0 when every batch is accounted for, 1 when anything failed)
+  run     process new GDELT batches, compact finished days, and exit
+          (0 when the run did its job, 1 when it failed and needs attention, 2 for bad configuration;
+          problems with individual GDELT files are retried and reported by status, not exit codes)
+  status  print the lake's health and exit 0 (healthy), 3 (data problems: gaps, the lake behind,
+          files failing for long) or 1 (the last run failed, or the lake can't be read)
 
 Durations: Go durations (90s, 15m, 2h) or whole days (7d).
 Settings come from environment variables; see README.md.
@@ -45,14 +49,17 @@ func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	os.Exit(realMain(ctx, os.Args[1:], os.Getenv, os.Stderr, log))
+	os.Exit(realMain(ctx, os.Args[1:], os.Getenv, os.Stdout, os.Stderr, log))
 }
 
 // realMain is main without the process: arguments, environment and outputs are passed in, so tests can drive it.
-func realMain(ctx context.Context, args []string, getenv func(string) string, stderr io.Writer, log *slog.Logger) int {
-	if len(args) == 0 || args[0] != "run" {
+func realMain(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer, log *slog.Logger) int {
+	if len(args) == 0 || (args[0] != "run" && args[0] != "status") {
 		fmt.Fprint(stderr, usage)
 		return 2
+	}
+	if args[0] == "status" {
+		return status(ctx, args[1:], getenv, stdout, stderr)
 	}
 	f, err := parseRunFlags(args[1:], stderr)
 	if err != nil {
@@ -90,13 +97,15 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 	runOnce := func() int {
 		started := time.Now()
 		sum, err := runner.Run(ctx)
-		code := ingest.ExitCode(sum, err)
+		code := ingest.ExitCode(err)
 		attrs := []any{"done", sum.Done, "failed", sum.Failed, "missing", sum.Missing, "waiting", sum.Waiting,
-			"compacted", sum.Compacted, "seconds", time.Since(started).Round(time.Second).Seconds(), "exit", code}
-		if err != nil {
-			attrs = append(attrs, "error", err.Error())
+			"recovered", sum.Recovered, "compacted", sum.Compacted, "list_errors", sum.ListErrors,
+			"seconds", time.Since(started).Round(time.Second).Seconds(), "exit", code}
+		if code != 0 {
+			log.Error("run failed", append(attrs, "error", err.Error())...)
+		} else {
+			log.Info("run finished", attrs...)
 		}
-		log.Info("run finished", attrs...)
 		return code
 	}
 	if f.every == 0 {
@@ -117,6 +126,42 @@ func realMain(ctx context.Context, args []string, getenv func(string) string, st
 
 // userAgent identifies the ingester to GDELT's file server.
 const userAgent = "gdelt-lake (+https://github.com/j-c/gdelt-lake)"
+
+// status prints the lake's health (design 8.4).
+func status(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	if len(args) > 0 {
+		fmt.Fprint(stderr, usage)
+		return 2
+	}
+	cfg, err := config.Load(getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, "configuration:", err)
+		return 2
+	}
+	store, err := openStorage(cfg)
+	if err != nil {
+		fmt.Fprintln(stderr, "storage:", err)
+		return ingest.StatusSystem
+	}
+	h, err := ingest.ReadHealth(ctx, store)
+	if err != nil {
+		fmt.Fprintln(stderr, "reading the lake's health:", err)
+		return ingest.StatusSystem
+	}
+	code, reasons := ingest.Evaluate(h, time.Now().UTC())
+	verdict := map[int]string{ingest.StatusHealthy: "healthy", ingest.StatusData: "data problems",
+		ingest.StatusSystem: "needs attention"}[code]
+	fmt.Fprintf(stdout, "%s (last run %s, %s)\n", verdict, h.LastRun.Finished.Format(time.RFC3339), h.LastRun.Outcome)
+	for _, s := range []string{"en", "tr"} {
+		if n := h.Newest[s]; n != nil {
+			fmt.Fprintf(stdout, "  %s: newest batch %s\n", s, n.Batch.Format(time.RFC3339))
+		}
+	}
+	for _, r := range reasons {
+		fmt.Fprintln(stdout, "  - "+r)
+	}
+	return code
+}
 
 func openStorage(cfg config.Config) (storage.Storage, error) {
 	switch cfg.Storage {

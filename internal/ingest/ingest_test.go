@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -110,7 +111,7 @@ func TestFirstRunIsForwardOnly(t *testing.T) {
 	if n := e.srv.Requests(fakegdelt.Name("en", "gkg", day.Add(10*time.Hour))); n != 1 {
 		t.Fatalf("10:00 GKG downloaded %d times, want once", n)
 	}
-	if code := ExitCode(sum, nil); code != 0 {
+	if code := ExitCode(nil); code != 0 {
 		t.Fatalf("exit code %d", code)
 	}
 }
@@ -120,9 +121,9 @@ func TestFailedFileIsRetriedNextRun(t *testing.T) {
 	e := newEnv(t, start.Add(time.Minute))
 	e.publish(start, map[string]fakegdelt.Fault{"mentions": fakegdelt.Corrupt}, "en")
 	e.publish(start, nil, "tr")
-	sum := e.run(t)
-	if sum.Done != 5 || sum.Failed != 1 || ExitCode(sum, nil) != 1 {
-		t.Fatalf("summary %+v, exit %d", sum, ExitCode(sum, nil))
+	sum := e.run(t) // a failed file is soft: the run still did its job
+	if sum.Done != 5 || sum.Failed != 1 {
+		t.Fatalf("summary %+v", sum)
 	}
 	if f := e.file(t, source.English, source.Mentions, start); f.Status != state.Failed || f.Attempts != 1 || f.Error == "" {
 		t.Fatalf("state %+v", f)
@@ -232,8 +233,8 @@ func TestStopsWhenCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	sum, err := e.r.Run(ctx)
-	if err == nil || ExitCode(sum, err) != 0 {
-		t.Fatalf("summary %+v, err %v, exit %d: a stop is a clean exit", sum, err, ExitCode(sum, err))
+	if err == nil || ExitCode(err) != 0 {
+		t.Fatalf("summary %+v, err %v, exit %d: a stop is a clean exit", sum, err, ExitCode(err))
 	}
 }
 
@@ -252,5 +253,144 @@ func TestLocalLakeEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "gkg", "date=2026-10-30", "20261030T100000-tr.parquet")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func (e *env) health(t *testing.T) Health {
+	t.Helper()
+	h, err := ReadHealth(t.Context(), e.store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
+// GDELT sometimes lists a file before it can be downloaded (seen for up to about 45 minutes in the first soak).
+func TestListedButNotDownloadableYetIsSoft(t *testing.T) {
+	start := day.Add(10 * time.Hour)
+	e := newEnv(t, start.Add(2*time.Minute))
+	e.publish(start, map[string]fakegdelt.Fault{"gkg": fakegdelt.Missing}, "en")
+	e.publish(start, nil, "tr")
+	sum, err := e.r.Run(t.Context())
+	if err != nil || ExitCode(err) != 0 || sum.Failed != 1 || sum.Done != 5 {
+		t.Fatalf("summary %+v, err %v", sum, err)
+	}
+	h := e.health(t)
+	if h.LastRun.Outcome != "ok" || len(h.Retrying) != 1 || h.Retrying[0].File != fakegdelt.Name("en", "gkg", start) {
+		t.Fatalf("health %+v", h)
+	}
+	if code, why := Evaluate(h, e.clock.t); code != StatusHealthy {
+		t.Fatalf("status %d %v: a file failing for minutes isn't a problem yet", code, why)
+	}
+	// Still failing 90 minutes later: a data problem, not a system one.
+	e.clock.t = start.Add(90 * time.Minute)
+	e.run(t)
+	if code, why := Evaluate(e.health(t), e.clock.t); code != StatusData || !strings.Contains(strings.Join(why, ";"), "failing for") {
+		t.Fatalf("status %d %v", code, why)
+	}
+	if f := e.file(t, source.English, source.GKG, start); f.FirstFailed == nil || !f.FirstFailed.Equal(start.Add(2*time.Minute)) || f.Attempts != 2 {
+		t.Fatalf("state %+v: want the first failure time kept", f)
+	}
+	// GDELT catches up.
+	e.publish(start, nil, "en")
+	e.clock.t = start.Add(105 * time.Minute)
+	if sum := e.run(t); sum.Done != 1 || sum.Failed != 0 {
+		t.Fatalf("after GDELT caught up: %+v", sum)
+	}
+	if h := e.health(t); len(h.Retrying) != 0 {
+		t.Fatalf("still retrying %+v", h.Retrying)
+	}
+}
+
+func TestLateFileReopensAndRecompactsItsDay(t *testing.T) {
+	started := day.Add(23 * time.Hour)
+	e := newEnv(t, started.Add(time.Minute))
+	e.publish(started, map[string]fakegdelt.Fault{"events": fakegdelt.Missing}, "en")
+	e.publish(started, nil, "tr")
+	e.run(t) // the lake starts at 23:00; the English events file is listed but 404
+	for b := started.Add(15 * time.Minute); b.Before(day.Add(24 * time.Hour)); b = b.Add(15 * time.Minute) {
+		e.publish(b, nil)
+	}
+	e.publish(day.Add(30*time.Hour), nil) // a later batch, so the list reaches back
+	// The next morning: the 23:00 English events file is still 404, so it's recorded as missing and the day compacts.
+	e.clock.t = day.Add(30 * time.Hour)
+	sum := e.run(t)
+	if sum.Compacted != 1 || sum.Missing != 1 {
+		t.Fatalf("summary %+v", sum)
+	}
+	if code, why := Evaluate(e.health(t), e.clock.t); code != StatusData || !strings.Contains(strings.Join(why, ";"), "1 missing") {
+		t.Fatalf("status %d %v: an open gap is a data problem", code, why)
+	}
+	// GDELT publishes it late; the next run adds it, re-opens the day and re-compacts it.
+	e.publish(started, nil, "en")
+	e.clock.t = day.Add(31 * time.Hour)
+	sum = e.run(t)
+	if sum.Recovered != 1 || sum.Compacted != 1 {
+		t.Fatalf("summary after the late file %+v", sum)
+	}
+	d, err := state.Load(t.Context(), e.store, state.DateOf(day))
+	if err != nil || d.CompactedAt == nil || d.Compacted[source.Events].Rows != 8 { // 4 batches x 2 streams x 1 row
+		t.Fatalf("day %+v %v", d.Compacted[source.Events], err)
+	}
+	files, _ := e.store.List(t.Context(), "events/date="+state.DateOf(day)+"/")
+	if len(files) != 1 {
+		t.Fatalf("files %v: want only the re-compacted day file", files)
+	}
+	// (The next day's first batches were never published in this test, so they show as open gaps too.)
+	var recovered []string
+	for _, g := range e.health(t).Gaps {
+		if g.Status == "recovered" {
+			recovered = append(recovered, g.File)
+		} else if strings.HasPrefix(g.File, "20261030") {
+			t.Errorf("day %s still has an open gap: %+v", state.DateOf(day), g)
+		}
+	}
+	if len(recovered) != 1 || recovered[0] != fakegdelt.Name("en", "events", started) {
+		t.Fatalf("recovered gaps %v", recovered)
+	}
+}
+
+// failingWrites fails writes of Parquet files: a stand-in for a broken disk or storage account.
+type failingWrites struct{ storage.Storage }
+
+func (f failingWrites) Write(ctx context.Context, p string, r io.Reader) error {
+	if strings.HasSuffix(p, ".parquet") {
+		return errors.New("disk full")
+	}
+	return f.Storage.Write(ctx, p, r)
+}
+
+func TestSystemErrorStopsTheRun(t *testing.T) {
+	e := newEnv(t, day.Add(10*time.Hour+time.Minute))
+	e.r.Store = failingWrites{e.store}
+	e.publish(day.Add(10*time.Hour), nil)
+	sum, err := e.r.Run(t.Context())
+	if err == nil || ExitCode(err) != 1 || sum.Done != 0 {
+		t.Fatalf("summary %+v, err %v: a storage failure stops the run with exit 1", sum, err)
+	}
+	h := e.health(t)
+	if h.LastRun.Outcome != "error" || !strings.Contains(h.LastRun.Error, "disk full") {
+		t.Fatalf("health %+v", h.LastRun)
+	}
+	if code, _ := Evaluate(h, e.clock.t); code != StatusSystem {
+		t.Fatalf("status %d, want %d (system)", code, StatusSystem)
+	}
+}
+
+func TestEvaluate(t *testing.T) {
+	now := day.Add(12 * time.Hour)
+	fresh := map[string]*Newest{"en": {Batch: now.Add(-20 * time.Minute)}, "tr": {Batch: now.Add(-40 * time.Minute)}}
+	ok := Health{LastRun: RunReport{Outcome: "ok"}, Newest: fresh}
+	if code, why := Evaluate(ok, now); code != StatusHealthy {
+		t.Fatalf("%d %v", code, why)
+	}
+	behind := Health{LastRun: RunReport{Outcome: "ok"}, Newest: map[string]*Newest{"en": fresh["en"],
+		"tr": {Batch: now.Add(-3 * time.Hour)}}}
+	if code, why := Evaluate(behind, now); code != StatusData || !strings.Contains(why[0], "tr is 3h0m0s behind") {
+		t.Fatalf("%d %v", code, why)
+	}
+	failed := Health{LastRun: RunReport{Outcome: "error", Error: "duckdb: out of memory"}, Newest: fresh}
+	if code, _ := Evaluate(failed, now); code != StatusSystem {
+		t.Fatalf("%d", code)
 	}
 }
