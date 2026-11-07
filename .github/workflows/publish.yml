@@ -55,11 +55,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           {
             echo "## Published"
             echo
             echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
+            echo "$TAGS"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

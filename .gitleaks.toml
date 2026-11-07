@@ -1,0 +1,7 @@
+# Secret scanning (Gitleaks): its built-in rules for keys, tokens and passwords. CI adds rules for the maintainer's own
+# private terms (hostnames, names, internal domains) from the GITLEAKS_PRIVATE_TERMS Actions secret, so those terms
+# never appear in this repository; see the gitleaks job in .github/workflows/ci.yml.
+title = "gdelt-lake"
+
+[extend]
+useDefault = true

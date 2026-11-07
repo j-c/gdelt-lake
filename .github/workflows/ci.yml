@@ -89,6 +89,57 @@ jobs:
           ../../bicep build main.bicep --stdout > /dev/null
           ../../bicep build-params main.example.bicepparam --stdout > /dev/null
 
+  # Secrets and the maintainer's private terms anywhere in the history. The terms come from an Actions secret (not
+  # available to pull requests from forks, which get the built-in rules only); findings are reported without the
+  # matched text.
+  gitleaks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: install gitleaks
+        run: |
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "$GITLEAKS_SHA256  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz -C "$RUNNER_TEMP" gitleaks && rm gitleaks.tar.gz
+      - name: config
+        env:
+          GITLEAKS_PRIVATE_TERMS: ${{ secrets.GITLEAKS_PRIVATE_TERMS }}
+        run: |
+          if [ -z "$GITLEAKS_PRIVATE_TERMS" ]; then
+            echo "::notice::GITLEAKS_PRIVATE_TERMS isn't available (not set, or a pull request from a fork): built-in rules only"
+          fi
+          scripts/gitleaks-config.sh "$RUNNER_TEMP/gitleaks.toml"
+      - name: scan the full history
+        run: |
+          status=0
+          "$RUNNER_TEMP/gitleaks" git --config "$RUNNER_TEMP/gitleaks.toml" --redact --no-banner --log-opts=--all \
+            --exit-code 3 --report-format json --report-path "$RUNNER_TEMP/leaks.json" || status=$?
+          [ "$status" = 0 ] || [ "$status" = 3 ] || exit "$status"
+          {
+            echo "## Secret scan (Gitleaks)"
+            echo
+            if [ "$status" = 0 ]; then
+              echo "No findings in $(git rev-list --all --count) commits."
+            else
+              echo "| Rule | File | Line | Commit |"
+              echo "|---|---|---:|---|"
+              jq -r '.[] | "| \(.RuleID) | `\(.File)` | \(.StartLine) | \(.Commit[0:7]) |"' "$RUNNER_TEMP/leaks.json"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" = 3 ]; then
+            jq -r '.[] | "::error file=\(.File),line=\(.StartLine),title=\(.RuleID)::possible secret or private term (commit \(.Commit[0:7]))"' \
+              "$RUNNER_TEMP/leaks.json"
+            exit 1
+          fi
+
   container:
     needs: test
     runs-on: ubuntu-24.04
