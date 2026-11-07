@@ -267,7 +267,8 @@ doesn't delete anything.
 - **Then history, newest first, a whole day at a time.** Recent history is usually the most useful, and finishing one
   day before starting the next means each day is compacted and usable as soon as it's done. A backfilled day goes
   through the same batch files, state and compaction as a live one; old files GDELT never published are recorded as
-  missing straight away, since they're long past the 6-hour wait.
+  missing straight away, since they're long past the 6-hour wait. Backfilled days that fall inside the lookback window are then treated
+  like live ones: their gaps are re-checked, and a day that ended less than two hours ago is compacted by a later run.
 - **A time budget per run** (`LAKE_BACKFILL_BUDGET`, default 10 minutes; `0` pauses backfill). When it's used up, the
   run stops at the next file boundary and the following run carries on. With 15-minute runs that leaves headroom, so
   runs never overlap, and on a scheduled job the cost per run stays bounded.

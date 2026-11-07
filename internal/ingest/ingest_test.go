@@ -543,3 +543,32 @@ func TestBackfillRetriesAFailingFileThenGivesUp(t *testing.T) {
 		t.Fatalf("%+v", f)
 	}
 }
+
+// A history day that ended less than CompactGrace ago is compacted by a later run, and its gaps are re-checked like
+// live ones.
+func TestBackfilledRecentDayCompactsLater(t *testing.T) {
+	e := newEnv(t, day.Add(24*time.Hour+31*time.Minute))
+	for b := day.Add(20 * time.Hour); !b.After(day.Add(24*time.Hour + 30*time.Minute)); b = b.Add(15 * time.Minute) {
+		if b.Equal(bfGap) {
+			e.publish(b, nil, "en")
+			continue
+		}
+		e.publish(b, nil)
+	}
+	e.r.BackfillTarget = func(time.Time) time.Time { return bfTarget }
+	e.r.BackfillBudget = time.Hour
+	if sum := e.run(t); sum.BackfillDays != 2 {
+		t.Fatalf("%+v", sum)
+	}
+	if d, _ := state.Load(t.Context(), e.store, state.DateOf(day)); d.CompactedAt != nil {
+		t.Fatal("compacted within the grace period")
+	}
+	// The missing translingual batch turns up; the next run after the grace period adds it and compacts the day.
+	e.publish(bfGap, nil, "tr")
+	e.clock.t = day.Add(26*time.Hour + time.Minute)
+	sum := e.run(t)
+	d, _ := state.Load(t.Context(), e.store, state.DateOf(day))
+	if sum.Recovered != 3 || d.CompactedAt == nil || d.Compacted[source.Events].Rows != 16*2 {
+		t.Fatalf("summary %+v, day %v %+v", sum, d.CompactedAt, d.Compacted[source.Events])
+	}
+}

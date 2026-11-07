@@ -109,8 +109,8 @@ func (r *Runner) run(ctx context.Context) (Summary, map[string]*state.Day, error
 		}
 		r.Log.Info("new lake", "started", lake.Started)
 	}
-	if first.Before(lake.Started) {
-		first = lake.Started
+	if first.Before(lake.First()) { // backfilled history in the window is re-checked and compacted like live data
+		first = lake.First()
 	}
 
 	days := map[string]*state.Day{}
