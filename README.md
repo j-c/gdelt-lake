@@ -90,6 +90,11 @@ make lint    # go vet, staticcheck, exhaustive, gofmt
 make build   # bin/gdelt-lake
 ```
 
+CI runs the same lint and tests on every push and pull request. Its test report (results per package, coverage,
+failures with their output, the slowest tests) is on each run's summary page, and failed tests are marked in the diff;
+the raw results (`test.json`, `coverage.out`) are kept for 30 days as the run's `test-results` artifact. To see the
+report locally: `go test -json -cover ./... | go run ./scripts/testreport`.
+
 `scripts/accept.sh` checks the container image on any Docker host: it builds the image, runs it once against a fake
 GDELT server, checks the lake it wrote and cleans up, ending with `PASS` or `FAIL`.
 

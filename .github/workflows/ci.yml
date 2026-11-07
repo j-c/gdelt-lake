@@ -34,7 +34,20 @@ jobs:
       - name: exhaustive
         run: go tool exhaustive ./...
       - name: tests
-        run: go test -race -count=1 ./...
+        run: go test -race -count=1 -json -coverprofile=coverage.out ./... > test.json
+      # The report goes to the run's summary page; failed tests are also marked on the run page and in the diff.
+      - name: test report
+        if: ${{ !cancelled() && hashFiles('test.json') != '' }}
+        run: go run ./scripts/testreport -annotate < test.json >> "$GITHUB_STEP_SUMMARY"
+      - name: keep the test results
+        if: ${{ !cancelled() && hashFiles('test.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results
+          path: |
+            test.json
+            coverage.out
+          retention-days: 30
 
   container:
     needs: test
