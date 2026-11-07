@@ -10,6 +10,11 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" -o /out/gdelt-lake ./cmd/gdelt-lake \
  && mkdir -p /out/lake /out/scratch
+# The licence (and NOTICE) files of everything compiled into the binary, plus Go's own, shipped with the image.
+# go-licenses warns about every package with assembly; keep its output for failures only.
+RUN go tool go-licenses save ./cmd/gdelt-lake --save_path /out/licenses 2>/tmp/go-licenses.log \
+    || { cat /tmp/go-licenses.log; exit 1; } \
+ && mkdir -p /out/licenses/go.dev/go && cp "$(go env GOROOT)/LICENSE" /out/licenses/go.dev/go/LICENSE
 
 # Test tooling for scripts/accept.sh: a fake GDELT and a lake checker. Never shipped.
 FROM build AS test
@@ -18,6 +23,7 @@ ENTRYPOINT ["/out/lake-accept"]
 
 FROM gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e AS runtime
 COPY --from=build /out/gdelt-lake /usr/local/bin/gdelt-lake
+COPY --from=build /out/licenses /usr/share/licenses/gdelt-lake
 # Mount points owned by the non-root user, so empty named volumes take that ownership.
 COPY --from=build --chown=65532:65532 /out/lake /lake
 COPY --from=build --chown=65532:65532 /out/scratch /scratch

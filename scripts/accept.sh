@@ -15,4 +15,5 @@ echo "== build"; "${DC[@]}" --profile test build --pull || { fail build; exit 1;
 echo "== fake GDELT"; "${DC[@]}" up -d --wait --wait-timeout 60 fake-gdelt || { fail "fake GDELT"; exit 1; }
 echo "== ingester (one run)"; "${DC[@]}" --profile test run --rm ingester || { fail ingester; exit 1; }
 echo "== verify"; "${DC[@]}" --profile test run --rm verify || { fail verify; exit 1; }
+echo "== licences"; ./image-licences.sh "$P-ingester" || { fail licences; exit 1; }
 echo "PASS"

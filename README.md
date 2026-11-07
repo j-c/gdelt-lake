@@ -107,6 +107,7 @@ GDELT server, checks the lake it wrote and cleans up, ending with `PASS` or `FAI
 
 ## Data and attribution
 
-The code is MIT licensed (see [LICENSE](LICENSE)). The data comes from the GDELT Project, which makes it freely
+The code is MIT licensed (see [LICENSE](LICENSE)). The container image also carries the licences and notices of the
+libraries compiled into it, in `/usr/share/licenses/gdelt-lake`; CI checks they all allow the image to be published. The data comes from the GDELT Project, which makes it freely
 available with attribution: if you use data collected with this tool, cite [the GDELT Project](https://www.gdeltproject.org).
 This repository doesn't contain or redistribute GDELT data, apart from a few sample rows used as test fixtures.
