@@ -317,6 +317,7 @@ attempts, so one bad file can't hold backfill up for long. A file GDELT never li
 | A19 | Health is reported by the lake itself: `_state/health.json` from every run, and `gdelt-lake status` with exit 3 for data problems (8.4). No health service. |
 | A20 | Gaps: missing after 6 hours (so the day compacts), re-checked for the lookback window, late files re-open and re-compact their day; older gaps are reconciled with a longer `--lookback` (8.3). The few seconds of duplicate visibility during compaction stay as they are (no table format). |
 | A21 | Backfill is a config value (`LAKE_BACKFILL`); the ingester fetches missing history on startup and every run after, live data first, then history newest-first a day at a time, within a per-run time budget (8.5). |
+| A22 | Azure recipe (P2): the jobs run in a new subnet of the deployer's existing virtual network; the lake gets its own new storage account (general-purpose v2, Standard, LRS, Hot tier, no public network access) with a private endpoint, whose DNS record goes in the deployer's existing `privatelink.blob.core.windows.net` zone (a parameter); logs go to a Log Analytics workspace (30-day retention, daily cap); backfill is a parameter, default six months. |
 
 ### 9.2 Decision records
 
