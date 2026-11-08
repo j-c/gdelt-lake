@@ -6,17 +6,21 @@ writing to a storage account that's reachable only from your private network. De
 
 ## What it creates
 
-In the resource group you deploy to:
+A resource group (`resourceGroupName`, `gdelt-lake` by default; created if it doesn't exist) holding:
 
 - **Storage account** for the lake: general-purpose v2, Standard, locally redundant (LRS), Hot tier. No public network
   access and no account keys: everything signs in with Entra ID. Container `gdelt`.
-- **Private endpoint** for the account's blob service, in an existing subnet of your virtual network, with its DNS record
-  in your existing `privatelink.blob.core.windows.net` zone.
+- **Private endpoint** for the account's blob service, in an existing subnet of your virtual network.
+- **Private DNS zone** `privatelink.blob.core.windows.net`, linked to the virtual network, holding the endpoint's record,
+  so the jobs (inside Azure) reach the account privately. If you already have such a zone linked to the network, pass
+  its ID as `blobPrivateDnsZoneId` instead (a network can't be linked to two zones of the same name). The link falls
+  back to public DNS for names the zone doesn't hold, so other storage accounts' names resolve as before.
 - **Lifecycle rules** on the data folders (`events/`, `mentions/`, `gkg/`; never `_state/`), by time since a file was
   written: deletion after `deleteAfterDays` (730 by default), and optional moves to Cool (`coolAfterDays`) and Cold
   (`coldAfterDays`), both off by default.
-- **Container Apps environment** (Consumption, internal: no public endpoint) in a new subnet of your virtual network,
-  delegated to `Microsoft.App/environments`. The subnet goes in the virtual network's own resource group.
+- **Container Apps environment** (Consumption, internal: no public endpoint) in a subnet of your virtual network,
+  delegated to `Microsoft.App/environments`: one the deployment creates in the virtual network's own resource group
+  (`jobsSubnetPrefix`), or your own (`existingJobsSubnetId`).
 - **Two scheduled jobs**, both running the published image:
   - `<name>-ingest`: `gdelt-lake run` every 15 minutes (UTC), 1 vCPU and 2 GiB, stopped after 14 minutes so runs
     never overlap;
@@ -31,14 +35,14 @@ Readers you list in `readerPrincipalIds` get read access to the lake.
 ## Before you start
 
 - The Azure CLI (2.53 or later, for `.bicepparam` files) and `az login` to the tenant.
-- Rights: Owner on the target resource group (or Contributor plus Role Based Access Control Administrator, since the
-  deployment assigns roles); permission to create a subnet in the virtual network and to join its private endpoint
-  subnet (Network Contributor on the network's resource group covers both); and Private DNS Zone Contributor on the
-  blob private DNS zone.
+- Rights: the deployment runs at subscription scope and creates the resource group, so Owner on the subscription (or
+  Contributor plus Role Based Access Control Administrator, since it assigns roles); permission to create a subnet in
+  the virtual network and to join its private endpoint subnet (Network Contributor on the network's resource group
+  covers both); and, if you pass an existing DNS zone, Private DNS Zone Contributor on it.
 - The resource providers `Microsoft.App`, `Microsoft.OperationalInsights` and `Microsoft.Insights` registered in the
   subscription (`az provider register --namespace Microsoft.App`, and so on).
-- From your network: a free address range of at least /27 for the jobs, the name of an existing subnet for private
-  endpoints, and the resource ID of the blob private DNS zone (linked to the virtual network).
+- From your network: a free address range of at least /27 for the jobs (or your own delegated subnet), and the name
+  of an existing subnet for private endpoints.
 - The jobs need outbound HTTPS to `data.gdeltproject.org` (GDELT) and `ghcr.io` (the image). If the virtual network
   sends internet traffic through a firewall, allow those.
 - If the virtual network itself is defined in a template that lists its subnets, add the jobs subnet there too, or a
@@ -53,23 +57,33 @@ Readers you list in `readerPrincipalIds` get read access to the lake.
    cp main.example.bicepparam my.bicepparam
    ```
 
-2. Create the resource group (in the region you want the data in) and preview the deployment. Nothing changes yet.
+2. Preview the deployment. Nothing changes yet. `--location` is the region the data lives in (and where Azure keeps
+   the deployment's record).
 
    ```
-   az group create --name gdelt-lake --location <region>
-   az deployment group what-if --resource-group gdelt-lake --parameters my.bicepparam
+   az deployment sub what-if --location <region> --name gdelt-lake --parameters my.bicepparam
    ```
 
-   Expect about 15 resources to be created, including the subnet in the network's resource group, and nothing
-   modified or deleted.
+   Expect the resource group and about 17 resources in it to be created (plus the jobs subnet in the network's resource
+   group, unless you brought your own), and nothing modified or deleted.
 
 3. Deploy.
 
    ```
-   az deployment group create --resource-group gdelt-lake --parameters my.bicepparam
+   az deployment sub create --location <region> --name gdelt-lake --parameters my.bicepparam
+   ```
+
+4. **Machines outside Azure** (e.g. on-premises consumers) resolve the account with your own DNS: add an A record for
+   `<storage account name>.blob.core.windows.net` pointing at the private endpoint's IP, the same way as for any other
+   private storage account. Both are in the deployment's outputs:
+
+   ```
+   az deployment sub show --name gdelt-lake --query "properties.outputs.{account:storageAccountName.value, ip:privateEndpointIp.value}"
    ```
 
 ## Check it
+
+(The commands use the default names: resource group `gdelt-lake`, jobs `gdeltlake-ingest` and `gdeltlake-status`.)
 
 - **Runs.** Within 15 minutes of the deployment, the ingest job has an execution, and it succeeds:
 
@@ -114,8 +128,7 @@ WHERE date >= DATE '2026-10-31'
 LIMIT 10;
 ```
 
-The deployment's outputs include the storage account name
-(`az deployment group show --resource-group gdelt-lake --name main --query properties.outputs`).
+The storage account name is in the deployment's outputs (step 4 of Deploy).
 
 Reading from outside Azure is charged as outbound data transfer after the first 100 GB a month. If your consumers
 scan a lot, sync a recent window to a local disk and query that instead (`azcopy sync`).
@@ -137,7 +150,8 @@ actual figures in Cost Management after the first week.
 ## Change or remove it
 
 Re-running the deployment with changed parameters updates it in place (for example a new image version, or
-different lifecycle rules). To remove it, delete the resource group, then the jobs subnet:
+different lifecycle rules). To remove it, delete the resource group (this also removes the DNS zone it created), then
+the jobs subnet if the deployment created it:
 
 ```
 az group delete --name gdelt-lake
