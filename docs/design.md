@@ -353,7 +353,7 @@ their own goals (R9) without changes to the code.
 | Recipe | When it suits | Rough cost (to confirm in P2) |
 |--------|---------------|-------------------------------|
 | Local: `docker compose`, with a `--every 15m` flag so the container loops | Development; anyone with an always-on machine | Nothing extra |
-| Azure: Container Apps **Job** on a cron schedule (Consumption plan) | **Reference deployment (cheapest)**: pays only for seconds running, and runs of a minute or two every 15 minutes probably fit inside the plan's monthly free allowance | Roughly storage only |
+| Azure: Container Apps **Job** on a cron schedule (Consumption plan) | **Reference deployment (cheapest)**: pays only for seconds running, and runs of a minute or two every 15 minutes probably fit inside the plan's monthly free allowance | Storage, plus about US$30 a month of fixed network costs for private storage (R13): the environment's managed load balancer and outbound IP in the virtual network, and the storage private endpoint |
 | Any Linux VM: cron, or the loop flag | Someone who already has a VM | The VM |
 | AWS (later): ECS Fargate task started by EventBridge Scheduler, plus an S3 adapter | AWS deployers | Probably under a few dollars a month |
 

@@ -122,9 +122,17 @@ scan a lot, sync a recent window to a local disk and query that instead (`azcopy
 
 ## Cost
 
-Mostly the storage and its private endpoint. The jobs normally finish in under a minute, which at this schedule
-stays within, or close to, the Container Apps monthly free allowance; backfill runs use their full budget until
-history is complete. Log volume is small. Check the actual figures in Cost Management after the first week.
+Fixed costs come from the network, not the jobs:
+
+- **The environment's managed resources.** A Container Apps environment in your own virtual network gets a Standard
+  load balancer and a static public IP for outbound traffic, in its `ME_…` resource group, billed at their usual
+  rates (list prices about US$0.025 an hour and US$0.005 an hour: about US$22 a month together).
+- **The storage account's private endpoint** (about US$7 a month, plus a small charge per GB through it).
+- **Storage** for the lake: about 70 GB a year of data at Hot prices, less with the lifecycle rules.
+
+The jobs normally finish in under a minute, which at this schedule stays within, or close to, the Container Apps
+monthly free allowance; backfill runs use their full budget until history is complete. Log volume is small. Check the
+actual figures in Cost Management after the first week.
 
 ## Change or remove it
 
