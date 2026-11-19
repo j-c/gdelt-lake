@@ -12,3 +12,12 @@ intervention, with gaps recorded and the actual monthly cost known.
 | 4 | **Public release**: the repository and image made public; tag `v0.1.0`. | A pre-release review (history, licence, no private details); an anonymous pull of the image. Done: public, `v0.1.0` tagged and published as `ghcr.io/j-c/gdelt-lake:0.1.0`, which pulls anonymously (checked 19 Nov). |
 | 5 | **Deploy** with the recipe: `what-if`, then create; first runs, status, alerts and a query from the private network. | The checks in deploy/azure/README.md. Deployed by the owner about 12 Nov and ingesting since (owner, 19 Nov); the query from the private network is not checked yet. |
 | 6 | **A week in Azure** with no intervention. | Gaps recorded by `status`; cost from Cost Management. Done: every hourly check from 14 Nov 19:05 to 18 Nov 22:05 UTC succeeded (the last 100 executions), with no intervention; cost for the first week US$9 (Cost Management, the lake's resource group and its `ME_` group; owner, 19 Nov), about US$39 a month at that rate. The first week includes the 182-day backfill's job time. |
+
+## Later
+
+- **Fixed cost of the Container Apps environment** (owner, 19 Nov: leave as is, revisit later). About US$22 of the
+  US$39 a month is the load balancer and outbound IP that Container Apps adds to any environment in the deployer's
+  network. The alternative found: run the ingester on an always-on on-prem Docker host writing over the VPN to the
+  private endpoint (a service principal instead of the managed identity), leaving the private endpoint and storage at
+  about US$10 a month; it depends on that host, and the Azure alerts move with it. Another Azure compute service would
+  need a NAT gateway for outbound traffic, which costs more.
