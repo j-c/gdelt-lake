@@ -4,8 +4,8 @@ Keeps a copy of [GDELT 2.0](https://www.gdeltproject.org)'s raw 15-minute data f
 Knowledge Graph, in English and translingual streams) as Parquet files in storage you control. Query it with DuckDB,
 Spark, Polars or anything else that reads Parquet, without GDELT's API rate limits or its 3-month search window.
 
-**Status: in development.** Nothing here is ready to use yet. The design is in [docs/design.md](docs/design.md) and
-the current phase's plan in [docs/p1-plan.md](docs/p1-plan.md).
+**Status: early.** The ingester runs locally and in Azure (`v0.1.0`); the query service isn't built. The design is in
+[docs/design.md](docs/design.md) and the current phase's plan in [docs/p2-plan.md](docs/p2-plan.md).
 
 ## How it works
 
