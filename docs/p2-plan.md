@@ -21,3 +21,8 @@ intervention, with gaps recorded and the actual monthly cost known.
   private endpoint (a service principal instead of the managed identity), leaving the private endpoint and storage at
   about US$10 a month; it depends on that host, and the Azure alerts move with it. Another Azure compute service would
   need a NAT gateway for outbound traffic, which costs more.
+- **Keeping the deployment without a consumer** (owner, 21 Nov: keep it for the time being). Dodona's test of GDELT
+  news discovery in Stage 1 didn't hold up against run-to-run noise, and its search hasn't been refused since 21 Oct,
+  so Dodona has no near-term use for the lake; the planned one is rolling forecasts (trigger signals), a long way off.
+  At about US$39 a month. Deleting the resource group and redeploying later refills the 182-day history in about two
+  days.
